@@ -35,6 +35,18 @@ interface LslStreamInfo {
   hostname: string;
 }
 
+// 更新类型定义 - 添加合并数据包接口
+interface FramePayload {
+  time_domain: EegBatch;
+  frequency_domain: FreqData[];
+}
+
+interface FreqData {
+  channel_index: number;
+  spectrum: number[]; // 频域幅度数据
+  frequency_bins: number[]; // 对应的频率值
+}
+
 // 响应式状态
 const isConnected = ref(false);
 const isRecording = ref(false);
@@ -44,6 +56,9 @@ const availableStreams = ref<LslStreamInfo[]>([]);
 const selectedStream = ref<string>("");
 const recordingFilename = ref("");
 
+// 添加频域数据状态 ⭐
+const spectrumData = ref<FreqData[]>([]);
+
 // Canvas相关
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const spectrumCanvasRef = ref<HTMLCanvasElement | null>(null);
@@ -51,21 +66,68 @@ let ctx: CanvasRenderingContext2D | null = null;
 let spectrumCtx: CanvasRenderingContext2D | null = null;
 
 // 渲染参数
-const CANVAS_WIDTH = 1000;  // 增加时域canvas宽度（66%）
-const SPECTRUM_WIDTH = 400;  // 频域canvas宽度（33%）
+const CANVAS_WIDTH = 1000;
+const SPECTRUM_WIDTH = 400;
 const CANVAS_HEIGHT = 600;
-const SPECTRUM_HEIGHT = 600;  // 与时域画布相同高度
-const CHANNEL_LABEL_WIDTH = 80; // 左侧通道标签区域宽度
-const WAVEFORM_WIDTH = CANVAS_WIDTH - CHANNEL_LABEL_WIDTH; // 实际波形绘制宽度
-const TIME_WINDOW = 10; // 10秒时间窗口
+const SPECTRUM_HEIGHT = 600;
+const CHANNEL_LABEL_WIDTH = 80;
+const WAVEFORM_WIDTH = CANVAS_WIDTH - CHANNEL_LABEL_WIDTH;
+const TIME_WINDOW = 10;
 let SAMPLE_RATE = 250;
-let CHANNELS_COUNT = 0; // 改为0，等待实际连接后设置
+let CHANNELS_COUNT = 0;
 
-// 数据缓冲区 - 使用普通数组避免Vue深度代理
-let dataBuffer: number[][] = [];
+// 添加缺失的变量声明 ⭐
 let bufferSize = 0;
-let bufferIndex = 0;
 let pixelsPerSample = 0;
+
+// 标准环形缓冲区实现（非响应式）
+class RingBuffer {
+  private buffer: Float32Array[];
+  private head: number = 0;
+  private readonly capacity: number;
+
+  constructor(channels: number, capacity: number) {
+    this.capacity = capacity;
+    this.buffer = Array(channels).fill(null).map(() => new Float32Array(capacity));
+  }
+
+  addSample(channelData: number[]) {
+    for (let ch = 0; ch < this.buffer.length && ch < channelData.length; ch++) {
+      this.buffer[ch][this.head] = channelData[ch] || 0;
+    }
+    this.head = (this.head + 1) % this.capacity;
+  }
+
+  addBatch(samples: EegSample[]) {
+    for (const sample of samples) {
+      this.addSample(sample.channels);
+    }
+  }
+
+  getChannelSamples(channel: number, count: number): Float32Array {
+    if (channel >= this.buffer.length) {
+      return new Float32Array(count);
+    }
+    
+    const result = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      const idx = (this.head - count + i + this.capacity) % this.capacity;
+      result[i] = this.buffer[channel][idx];
+    }
+    return result;
+  }
+
+  getCurrentIndex(): number {
+    return this.head;
+  }
+
+  getCapacity(): number {
+    return this.capacity;
+  }
+}
+
+// 数据缓冲区声明
+let ringBuffer: RingBuffer | null = null;
 
 // 波前式渲染状态
 const waveFrontX = ref(0);
@@ -78,42 +140,11 @@ const channelColors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#
 const hoveredChannel = ref<number>(-1);
 const selectedChannels = ref<Set<number>>(new Set());
 
-// FFT Worker相关
-let fftWorker: Worker | null = null;
-const spectrumData = ref<number[][]>([]);
-
-// 新增频域更新相关变量
+// 频域更新相关变量
 const frequencyUpdateRate = ref(0);
 let lastFrequencyUpdate = 0;
-
-// Web Worker FFT初始化
-function initFFTWorker() {
-  fftWorker = new Worker('/fft-worker.js');
-  
-  fftWorker.onmessage = (e) => {
-    const { type, data } = e.data;
-    
-    switch (type) {
-      case 'init-complete':
-        console.log('FFT Worker initialized');
-        break;
-        
-      case 'spectrum':
-        updateSpectrum(data.channelIndex, data.spectrum);
-        break;
-        
-      case 'error':
-        console.error('FFT Worker error:', data.message);
-        break;
-    }
-  };
-  
-  // 初始化FFT (256点FFT)
-  fftWorker.postMessage({
-    type: 'init',
-    data: { fftSize: 256 }
-  });
-}
+let lastFreqRenderTime = 0;
+const FREQ_RENDER_INTERVAL = 1000 / 60; // 60Hz限制
 
 // 初始化数据缓冲区
 function initDataBuffer() {
@@ -123,9 +154,8 @@ function initDataBuffer() {
   }
   
   bufferSize = Math.ceil(SAMPLE_RATE * TIME_WINDOW);
-  dataBuffer = Array(CHANNELS_COUNT).fill(null).map(() => new Array(bufferSize).fill(0));
-  bufferIndex = 0;
-  pixelsPerSample = WAVEFORM_WIDTH / bufferSize; // 使用实际波形宽度
+  ringBuffer = new RingBuffer(CHANNELS_COUNT, bufferSize);
+  pixelsPerSample = WAVEFORM_WIDTH / bufferSize;
   
   // 初始化通道可见性
   channelVisibility.value = Array(CHANNELS_COUNT).fill(true);
@@ -322,157 +352,19 @@ function drawChannelLabel(channelIndex: number, channelHeight: number) {
   ctx.restore();
 }
 
-// 处理接收到的EEG数据
-function processEegBatch(batch: EegBatch) {
-  SAMPLE_RATE = batch.sample_rate;
-  CHANNELS_COUNT = batch.channels_count;
-  
-  // 如果通道数改变，重新初始化
-  if (dataBuffer.length !== CHANNELS_COUNT) {
-    initDataBuffer();
-  }
-  
-  // 将样本添加到缓冲区
-  for (const sample of batch.samples) {
-    for (let ch = 0; ch < CHANNELS_COUNT; ch++) {
-      if (ch < sample.channels.length) {
-        dataBuffer[ch][bufferIndex] = sample.channels[ch];
-      }
-    }
-    
-    bufferIndex = (bufferIndex + 1) % bufferSize;
-  }
-  
-  // 触发FFT计算（每隔一定样本数）
-  if (batch.batch_id % 10 === 0 && fftWorker) {
-    for (let ch = 0; ch < CHANNELS_COUNT; ch++) {
-      if (channelVisibility.value[ch]) {
-        // 获取最近256个样本用于FFT
-        const fftSamples = [];
-        for (let i = 0; i < 256; i++) {
-          const idx = (bufferIndex - 256 + i + bufferSize) % bufferSize;
-          fftSamples.push(dataBuffer[ch][idx]);
-        }
-        
-        fftWorker.postMessage({
-          type: 'compute',
-          data: {
-            channelData: fftSamples,
-            channelIndex: ch,
-            timestamp: Date.now()
-          }
-        });
-      }
-    }
-  }
-}
-
-// 波前式渲染主循环
-function renderLoop() {
-  if (!ctx || CHANNELS_COUNT <= 0) return;
-  
-  // 时域渲染（保持原有逻辑）
-  const pointsToProcess = 4;
-  
-  // 1. 擦除波前区域（只在波形区域）
-  const clearWidth = pointsToProcess * pixelsPerSample + 10;
-  const clearX = Math.max(CHANNEL_LABEL_WIDTH, waveFrontX.value);
-  ctx.clearRect(clearX, 0, clearWidth, CANVAS_HEIGHT);
-  
-  // 2. 重绘背景（只在擦除区域）
-  ctx.save();
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(clearX, 0, clearWidth, CANVAS_HEIGHT);
-  
-  // 重绘网格线
-  ctx.strokeStyle = '#e0e0e0';
-  ctx.lineWidth = 0.5;
-  ctx.beginPath();
-  
-  // 垂直网格线
-  const timeStep = WAVEFORM_WIDTH / 10;
-  for (let i = 1; i <= 10; i++) {
-    const x = CHANNEL_LABEL_WIDTH + i * timeStep;
-    if (x >= clearX && x <= clearX + clearWidth) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, CANVAS_HEIGHT);
-    }
-  }
-  
-  // 水平网格线
-  const channelHeight = CANVAS_HEIGHT / CHANNELS_COUNT;
-  for (let ch = 0; ch <= CHANNELS_COUNT; ch++) {
-    const y = channelHeight * ch;
-    ctx.moveTo(clearX, y);
-    ctx.lineTo(clearX + clearWidth, y);
-  }
-  ctx.stroke();
-  ctx.restore();
-  
-  // 3. 绘制新的波形数据
-  for (let ch = 0; ch < CHANNELS_COUNT; ch++) {
-    if (!channelVisibility.value[ch]) continue;
-    
-    const isSelected = selectedChannels.value.has(ch);
-    ctx.strokeStyle = channelColors[ch % channelColors.length];
-    ctx.lineWidth = isSelected ? 2.5 : 1.5;
-    ctx.beginPath();
-    
-    // 从上一帧的最后点开始
-    ctx.moveTo(lastPoints[ch].x, lastPoints[ch].y);
-    
-    // 绘制新的数据点
-    for (let i = 0; i < pointsToProcess; i++) {
-      const dataIndex = (bufferIndex - pointsToProcess + i + bufferSize) % bufferSize;
-      const x = waveFrontX.value + i * pixelsPerSample;
-      
-      // 确保不超出波形区域
-      if (x < CHANNEL_LABEL_WIDTH) continue;
-      
-      const channelHeight = CANVAS_HEIGHT / CHANNELS_COUNT;
-      const channelCenter = channelHeight * (ch + 0.5);
-      const amplitude = dataBuffer[ch][dataIndex];
-      const scale = channelHeight * 0.4 / 100;
-      const y = channelCenter - amplitude * scale;
-      
-      ctx.lineTo(x, y);
-      
-      if (i === pointsToProcess - 1) {
-        lastPoints[ch] = { x, y };
-      }
-    }
-    
-    ctx.stroke();
-  }
-  
-  // 4. 更新波前位置
-  waveFrontX.value += pointsToProcess * pixelsPerSample;
-  if (waveFrontX.value >= CANVAS_WIDTH) {
-    waveFrontX.value = CHANNEL_LABEL_WIDTH;
-    lastPoints.forEach(point => {
-      point.x = CHANNEL_LABEL_WIDTH;
-    });
-  }
-  
-  renderLoopId = requestAnimationFrame(renderLoop);
-}
-
-// 更新频谱显示
-function updateSpectrum(channelIndex: number, spectrum: number[]) {
-  if (!spectrumData.value[channelIndex]) {
-    spectrumData.value[channelIndex] = [];
-  }
-  spectrumData.value[channelIndex] = spectrum.slice(0, 50); // 只显示前50个频率bin
-  
-  // 重绘频谱图
-  drawSpectrum();
-}
-
-// 改进的频域渲染函数
-function drawSpectrum() {
-  if (!spectrumCtx || CHANNELS_COUNT <= 0) return;
-  
+// 使用后端频域数据的绘制函数
+function drawSpectrumFromBackend() {
   const now = Date.now();
+  
+  // 频域更新节流控制⭐
+  if (now - lastFreqRenderTime < FREQ_RENDER_INTERVAL) {
+    return; // 跳过本次渲染
+  }
+  lastFreqRenderTime = now;
+  
+  if (!spectrumCtx || CHANNELS_COUNT <= 0 || spectrumData.value.length === 0) return;
+  
+  // 更新频域更新率显示
   const deltaTime = now - lastFrequencyUpdate;
   if (deltaTime > 0) {
     frequencyUpdateRate.value = 1000 / deltaTime;
@@ -483,10 +375,12 @@ function drawSpectrum() {
   drawSpectrumGrid();
   
   const channelHeight = SPECTRUM_HEIGHT / CHANNELS_COUNT;
-  const freqBinWidth = SPECTRUM_WIDTH / 50; // 50个频率bin (1-50Hz)
   
-  for (let ch = 0; ch < CHANNELS_COUNT; ch++) {
-    if (!channelVisibility.value[ch] || !spectrumData.value[ch]) continue;
+  // 绘制每个通道的频谱
+  for (const freqData of spectrumData.value) {
+    const ch = freqData.channel_index;
+    
+    if (ch >= CHANNELS_COUNT || !channelVisibility.value[ch]) continue;
     
     const channelY = ch * channelHeight;
     const isSelected = selectedChannels.value.has(ch);
@@ -495,13 +389,14 @@ function drawSpectrum() {
     spectrumCtx.lineWidth = isSelected ? 2.5 : 1.5;
     spectrumCtx.fillStyle = channelColors[ch % channelColors.length] + '20'; // 半透明填充
     
-    const spectrum = spectrumData.value[ch];
+    const spectrum = freqData.spectrum;
+    const freqBinWidth = SPECTRUM_WIDTH / spectrum.length;
     
     spectrumCtx.beginPath();
     spectrumCtx.moveTo(0, channelY + channelHeight);
     
     // 绘制频谱曲线
-    for (let i = 0; i < Math.min(spectrum.length, 50); i++) {
+    for (let i = 0; i < spectrum.length; i++) {
       const magnitude = Math.min(spectrum[i] / 50, 1); // 归一化到0-1
       const x = i * freqBinWidth;
       const y = channelY + channelHeight - (magnitude * channelHeight * 0.8);
@@ -710,25 +605,188 @@ onMounted(async () => {
   await nextTick();
   initDataBuffer();
   initCanvas();
-  initFFTWorker();
   
-  // 监听EEG数据
-  const unlisten = await listen('eeg-data', (event) => {
-    const batch = event.payload as EegBatch;
-    processEegBatch(batch);
+  // 统一监听合并的帧数据（时域+频域）⭐
+  const unlisten = await listen('frame-update', (event) => {
+    const payload = event.payload as FramePayload;
+    processFramePayload(payload);
   });
+  
+  // 移除向后兼容的旧格式监听 ⭐
+  // const unlistenLegacy = await listen('eeg-data', (event) => {
+  //   const batch = event.payload as EegBatch;
+  //   // 转换为新格式
+  //   const payload: FramePayload = {
+  //     time_domain: batch,
+  //     frequency_domain: [] // 频域数据为空
+  //   };
+  //   processFramePayload(payload);
+  // });
   
   // 在组件卸载时清理
   onUnmounted(() => {
     unlisten();
+    // unlistenLegacy(); // 移除这行
     if (renderLoopId) {
       cancelAnimationFrame(renderLoopId);
     }
-    if (fftWorker) {
-      fftWorker.terminate();
-    }
   });
 });
+
+// 处理接收到的EEG数据
+function processFramePayload(payload: FramePayload) {
+  // 1. 处理时域数据
+  const batch = payload.time_domain;
+  SAMPLE_RATE = batch.sample_rate;
+  CHANNELS_COUNT = batch.channels_count;
+  
+  // 如果通道数改变，重新初始化
+  if (!ringBuffer || ringBuffer.getCapacity() !== Math.ceil(SAMPLE_RATE * TIME_WINDOW)) {
+    initDataBuffer();
+  }
+  
+  // 将样本添加到环形缓冲区⭐
+  if (ringBuffer) {
+    ringBuffer.addBatch(batch.samples);
+  }
+  
+  // 2. 处理频域数据
+  if (payload.frequency_domain && payload.frequency_domain.length > 0) {
+    spectrumData.value = payload.frequency_domain;
+    drawSpectrumFromBackend();
+  }
+}
+
+// 波前式渲染主循环
+function renderLoop() {
+  if (!ctx || CHANNELS_COUNT <= 0 || !ringBuffer) return;
+  
+  const pointsToProcess = 4;
+  
+  // 1. 计算波前移动量
+  const waveAdvance = pointsToProcess * pixelsPerSample;
+  const nextWaveFrontX = waveFrontX.value + waveAdvance;
+  
+  // 2. 局部擦除策略（支持循环）⭐
+  if (nextWaveFrontX >= CANVAS_WIDTH) {
+    // 情况A：波前需要循环到画布左端
+    const remainingWidth = CANVAS_WIDTH - waveFrontX.value;
+    ctx.clearRect(waveFrontX.value, 0, remainingWidth, CANVAS_HEIGHT);
+    
+    const wrapAroundWidth = nextWaveFrontX - CANVAS_WIDTH;
+    ctx.clearRect(CHANNEL_LABEL_WIDTH, 0, wrapAroundWidth, CANVAS_HEIGHT);
+  } else {
+    // 情况B：普通前进
+    const clearWidth = Math.ceil(waveAdvance) + 2; // 2像素抗锯齿余量
+    ctx.clearRect(waveFrontX.value, 0, clearWidth, CANVAS_HEIGHT);
+  }
+  
+  // 重绘背景网格（在擦除区域）
+  redrawGridInRegion(waveFrontX.value, waveAdvance, nextWaveFrontX >= CANVAS_WIDTH);
+  
+  // 3. 绘制新的波形数据
+  for (let ch = 0; ch < CHANNELS_COUNT; ch++) {
+    if (!channelVisibility.value[ch]) continue;
+    
+    const isSelected = selectedChannels.value.has(ch);
+    ctx.strokeStyle = channelColors[ch % channelColors.length];
+    ctx.lineWidth = isSelected ? 2.5 : 1.5;
+    ctx.beginPath();
+    
+    // 从上一帧的最后点开始
+    ctx.moveTo(lastPoints[ch].x, lastPoints[ch].y);
+    
+    // 获取新数据点（从环形缓冲区）⭐
+    const samples = ringBuffer.getChannelSamples(ch, pointsToProcess);
+    
+    // 绘制新的数据点
+    for (let i = 0; i < pointsToProcess; i++) {
+      let x = waveFrontX.value + i * pixelsPerSample;
+      
+      // 处理循环绘制⭐
+      if (x >= CANVAS_WIDTH) {
+        x = CHANNEL_LABEL_WIDTH + (x - CANVAS_WIDTH);
+      }
+      
+      // 确保不超出波形区域左边界
+      if (x < CHANNEL_LABEL_WIDTH) continue;
+      
+      const channelHeight = CANVAS_HEIGHT / CHANNELS_COUNT;
+      const channelCenter = channelHeight * (ch + 0.5);
+      const amplitude = samples[i];
+      const scale = channelHeight * 0.4 / 100;
+      const y = channelCenter - amplitude * scale;
+      
+      ctx.lineTo(x, y);
+      
+      // 记录最后一点供下一帧使用
+      if (i === pointsToProcess - 1) {
+        lastPoints[ch] = { x, y };
+      }
+    }
+    
+    ctx.stroke();
+  }
+  
+  // 4. 更新波前位置（循环处理）⭐
+  waveFrontX.value = nextWaveFrontX % CANVAS_WIDTH;
+  if (waveFrontX.value < CHANNEL_LABEL_WIDTH) {
+    waveFrontX.value = CHANNEL_LABEL_WIDTH;
+  }
+  
+  renderLoopId = requestAnimationFrame(renderLoop);
+}
+
+// 新增：重绘网格辅助函数
+function redrawGridInRegion(startX: number, width: number, isWrapped: boolean) {
+  if (!ctx) return;
+  
+  ctx.save();
+  
+  // 绘制背景色
+  ctx.fillStyle = '#ffffff';
+  if (isWrapped) {
+    const remainingWidth = CANVAS_WIDTH - startX;
+    ctx.fillRect(startX, 0, remainingWidth, CANVAS_HEIGHT);
+    ctx.fillRect(CHANNEL_LABEL_WIDTH, 0, width - remainingWidth, CANVAS_HEIGHT);
+  } else {
+    ctx.fillRect(startX, 0, width + 2, CANVAS_HEIGHT);
+  }
+  
+  // 重绘网格线
+  ctx.strokeStyle = '#e0e0e0';
+  ctx.lineWidth = 0.5;
+  ctx.beginPath();
+  
+  // 垂直网格线
+  const timeStep = WAVEFORM_WIDTH / 10;
+  for (let i = 1; i <= 10; i++) {
+    const x = CHANNEL_LABEL_WIDTH + i * timeStep;
+    if ((x >= startX && x <= startX + width) || 
+        (isWrapped && x >= CHANNEL_LABEL_WIDTH && x <= CHANNEL_LABEL_WIDTH + (width - (CANVAS_WIDTH - startX)))) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, CANVAS_HEIGHT);
+    }
+  }
+  
+  // 水平网格线
+  const channelHeight = CANVAS_HEIGHT / CHANNELS_COUNT;
+  for (let ch = 0; ch <= CHANNELS_COUNT; ch++) {
+    const y = channelHeight * ch;
+    if (isWrapped) {
+      ctx.moveTo(startX, y);
+      ctx.lineTo(CANVAS_WIDTH, y);
+      ctx.moveTo(CHANNEL_LABEL_WIDTH, y);
+      ctx.lineTo(CHANNEL_LABEL_WIDTH + (width - (CANVAS_WIDTH - startX)), y);
+    } else {
+      ctx.moveTo(startX, y);
+      ctx.lineTo(startX + width + 2, y);
+    }
+  }
+  
+  ctx.stroke();
+  ctx.restore();
+}
 </script>
 
 <template>
