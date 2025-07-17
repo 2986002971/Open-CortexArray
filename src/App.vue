@@ -144,7 +144,16 @@ const selectedChannels = ref<Set<number>>(new Set());
 const frequencyUpdateRate = ref(0);
 let lastFrequencyUpdate = 0;
 let lastFreqRenderTime = 0;
-const FREQ_RENDER_INTERVAL = 1000 / 60; // 60Hz限制
+const FREQ_RENDER_INTERVAL = 1000 / 30; // 30Hz限制
+
+// 添加独立的性能监控
+const backendDataRate = ref(0);
+const frontendRenderRate = ref(0);
+const timedomainRenderRate = ref(0);
+
+let lastBackendDataTime = 0;
+let lastTimedomainRender = 0;
+let timedomainFrameCount = 0;
 
 // 初始化数据缓冲区
 function initDataBuffer() {
@@ -635,6 +644,15 @@ onMounted(async () => {
 
 // 处理接收到的EEG数据
 function processFramePayload(payload: FramePayload) {
+  const now = Date.now();
+  
+  // 跟踪后端数据更新率
+  if (lastBackendDataTime > 0) {
+    const delta = now - lastBackendDataTime;
+    backendDataRate.value = 1000 / delta;
+  }
+  lastBackendDataTime = now;
+  
   // 1. 处理时域数据
   const batch = payload.time_domain;
   SAMPLE_RATE = batch.sample_rate;
@@ -659,6 +677,15 @@ function processFramePayload(payload: FramePayload) {
 
 // 波前式渲染主循环
 function renderLoop() {
+  const now = Date.now();
+  timedomainFrameCount++;
+  
+  if (now - lastTimedomainRender >= 1000) {
+    timedomainRenderRate.value = timedomainFrameCount;
+    timedomainFrameCount = 0;
+    lastTimedomainRender = now;
+  }
+  
   if (!ctx || CHANNELS_COUNT <= 0 || !ringBuffer) return;
   
   const pointsToProcess = 4;
@@ -927,7 +954,7 @@ function redrawGridInRegion(startX: number, width: number, isWrapped: boolean) {
     <!-- 信息面板 -->
     <div class="info-panel">
       <div class="info-item">
-        <strong>渲染模式:</strong> 双画布实时渲染 (~60FPS)
+        <strong>渲染模式:</strong> 双画布实时渲染 (~30FPS)
       </div>
       <div class="info-item">
         <strong>时间窗口:</strong> {{ TIME_WINDOW }}秒
@@ -940,6 +967,12 @@ function redrawGridInRegion(startX: number, width: number, isWrapped: boolean) {
       </div>
       <div class="info-item">
         <strong>频域更新:</strong> {{ Math.round(frequencyUpdateRate) }}Hz
+      </div>
+      <div class="info-item">
+        <strong>后端数据率:</strong> {{ Math.round(backendDataRate) }}Hz
+      </div>
+      <div class="info-item">
+        <strong>时域渲染率:</strong> {{ Math.round(timedomainRenderRate) }}帧/秒
       </div>
     </div>
   </div>

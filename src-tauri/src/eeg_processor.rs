@@ -10,7 +10,7 @@ use crossbeam_channel;
 use std::time::Duration;
 
 const FFT_WINDOW_SIZE: usize = 1024;
-const FRAME_RATE_HZ: f64 = 60.0;
+const FRAME_RATE_HZ: f64 = 30.0;
 const FRAME_INTERVAL_MS: u64 = (1000.0 / FRAME_RATE_HZ) as u64;
 
 pub struct EegProcessor {
@@ -333,7 +333,7 @@ impl EegProcessor {
         })
     }
     
-    /// 时域数据收集线程 - 为前端提供原始波形
+    /// 时域数据收集线程 - 纯时间驱动的批次发送
     async fn spawn_time_domain_collector(
         &self,
         data_rx: crossbeam_channel::Receiver<EegSample>,
@@ -344,57 +344,89 @@ impl EegProcessor {
         tokio::spawn(async move {
             println!("🟢 Time domain collector started");
             
-            let batch_size = (stream_info.sample_rate / FRAME_RATE_HZ) as usize; // 每帧的样本数
-            let mut current_batch = Vec::with_capacity(batch_size);
+            // ✅ 纯时间驱动，稳定的发送间隔
+            let send_interval = Duration::from_millis(FRAME_INTERVAL_MS); // 33ms
+            
+            let mut current_batch = Vec::new();
             let mut batch_id = 0u64;
+            let mut batch_timer = tokio::time::interval(send_interval);
+            
+            // 跳过第一个tick（立即开始）
+            batch_timer.tick().await;
             
             loop {
-                // 检查停止状态
-                {
-                    let running = is_running.read().await;
-                    if !*running {
-                        println!("🟢 Time domain collector stopping");
-                        break;
-                    }
-                }
-                
-                match data_rx.try_recv() {
-                    Ok(sample) => {
-                        current_batch.push(sample);
-                        
-                        // 当批次满时发送
-                        if current_batch.len() >= batch_size {
-                            let batch = EegBatch {
-                                samples: current_batch.clone(),
-                                batch_id,
-                                channels_count: stream_info.channels_count,
-                                sample_rate: stream_info.sample_rate,
-                            };
-                            
-                            if time_domain_tx.send(batch).is_err() {
-                                println!("🟢 Time domain: receiver dropped");
+                tokio::select! {
+                    // 定时发送批次
+                    _ = batch_timer.tick() => {
+                        {
+                            let running = is_running.read().await;
+                            if !*running {
+                                // ✅ 停止前发送剩余数据
+                                if !current_batch.is_empty() {
+                                    let final_batch = EegBatch {
+                                        samples: current_batch.clone(),
+                                        batch_id,
+                                        channels_count: stream_info.channels_count,
+                                        sample_rate: stream_info.sample_rate,
+                                    };
+                                    let _ = time_domain_tx.send(final_batch);
+                                }
+                                println!("🟢 Time domain collector stopping");
                                 break;
                             }
-                            
-                            current_batch.clear();
-                            batch_id += 1;
                         }
+                        
+                        // ✅ 总是发送当前批次（即使为空）
+                        let batch = EegBatch {
+                            samples: current_batch.clone(),
+                            batch_id,
+                            channels_count: stream_info.channels_count,
+                            sample_rate: stream_info.sample_rate,
+                        };
+                        
+                        if time_domain_tx.send(batch).is_err() {
+                            println!("🟢 Time domain: receiver dropped");
+                            break;
+                        }
+                        
+                        // 统计和清理
+                        if batch_id % 30 == 0 && batch_id > 0 {  // 每秒报告一次
+                            println!("🟢 Time domain: batch #{}, samples in current: {}", 
+                                     batch_id, current_batch.len());
+                        }
+                        
+                        current_batch.clear();
+                        batch_id += 1;
                     }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        tokio::time::sleep(Duration::from_micros(100)).await;
-                    }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        println!("🟢 Time domain: data source disconnected");
-                        break;
+                    
+                    // 非阻塞收集数据
+                    _ = tokio::time::sleep(Duration::from_micros(100)) => {
+                        // 批量收集数据，同时检测断开
+                        loop {
+                            match data_rx.try_recv() {
+                                Ok(sample) => {
+                                    current_batch.push(sample);
+                                }
+                                Err(crossbeam_channel::TryRecvError::Empty) => {
+                                    // 没有更多数据，继续等待
+                                    break;
+                                }
+                                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                    // ✅ 这里可以正确检测到断开
+                                    println!("🟢 Time domain: data source disconnected");
+                                    return; // 直接退出任务
+                                }
+                            }
+                        }
                     }
                 }
             }
             
-            println!("🟢 Time domain collector stopped");
+            println!("🟢 Time domain collector stopped - sent {} batches", batch_id);
         })
     }
     
-    /// 前端发送线程 - 60Hz刷新
+    /// 前端发送线程 - 30Hz刷新，总是发送可用数据
     async fn spawn_frontend_thread(
         &self,
         freq_rx: crossbeam_channel::Receiver<Vec<FreqData>>,
@@ -412,6 +444,18 @@ impl EegProcessor {
             );
             let mut latest_freq_data: Option<Vec<FreqData>> = None;
             let mut latest_time_domain: Option<EegBatch> = None;
+            let mut frame_count = 0u64;
+            
+            // ✅ 创建空的频域数据作为默认值
+            let create_empty_freq_data = || -> Vec<FreqData> {
+                (0..channels_count).map(|i| FreqData {
+                    channel_index: i,
+                    spectrum: vec![0.0; FFT_WINDOW_SIZE / 2],  // 零填充
+                    frequency_bins: (0..FFT_WINDOW_SIZE / 2)
+                        .map(|j| j as f64 * sample_rate / FFT_WINDOW_SIZE as f64)
+                        .collect(),
+                }).collect()
+            };
             
             loop {
                 tokio::select! {
@@ -426,7 +470,7 @@ impl EegProcessor {
                             }
                         }
                         
-                        // 收集最新数据（非阻塞）
+                        // 非阻塞收集最新数据
                         while let Ok(freq_data) = freq_rx.try_recv() {
                             latest_freq_data = Some(freq_data);
                         }
@@ -435,46 +479,48 @@ impl EegProcessor {
                             latest_time_domain = Some(time_domain);
                         }
                         
-                        // 发送给前端
-                        if let (Some(freq_data), Some(time_domain)) = (&latest_freq_data, &latest_time_domain) {
-                            let payload = FramePayload {
-                                time_domain: time_domain.clone(),
-                                frequency_domain: freq_data.clone(),
-                            };
-                            
-                            // ✅ 修复：使用正确的 emit 方法
-                            if let Err(e) = app_handle.emit("frame-update", &payload) {
-                                println!("Failed to emit frame-update: {}", e);
-                            }
-                        } else if latest_freq_data.is_some() {
-                            // 即使没有时域数据，也发送频域数据
-                            let mock_time_domain = EegBatch {
+                        // ✅ 总是发送数据，缺失部分用默认值
+                        let freq_data = latest_freq_data.as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| create_empty_freq_data());
+                        
+                        let time_domain = latest_time_domain.as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| EegBatch {
                                 samples: vec![],
-                                batch_id: 0,
+                                batch_id: frame_count,
                                 channels_count,
                                 sample_rate,
-                            };
+                            });
+                        
+                        let payload = FramePayload {
+                            time_domain,
+                            frequency_domain: freq_data,
+                        };
+                        
+                        if let Err(e) = app_handle.emit("frame-update", &payload) {
+                            println!("Failed to emit frame-update: {}", e);
+                        } else {
+                            frame_count += 1;
                             
-                            let payload = FramePayload {
-                                time_domain: mock_time_domain,
-                                frequency_domain: latest_freq_data.as_ref().unwrap().clone(),
-                            };
-                            
-                            // ✅ 修复：使用正确的 emit 方法
-                            if let Err(e) = app_handle.emit("frame-update", &payload) {
-                                println!("Failed to emit frame-update: {}", e);
+                            if frame_count <= 5 {
+                                println!("🔵 Frame #{} sent (freq: {}, time: {})", 
+                                         frame_count,
+                                         latest_freq_data.is_some(),
+                                         latest_time_domain.is_some());
                             }
                         }
                     }
                 }
             }
             
-            println!("🔵 Frontend thread stopped");
+            println!("🔵 Frontend thread stopped - frames sent: {}", frame_count);
         })
     }
 }
 
 // FFT计算辅助函数保持不变
+// ✅ 改进的FFT计算函数
 fn compute_multi_channel_fft(
     channel_windows: &[VecDeque<f64>],
     fft: &dyn rustfft::Fft<f64>,
@@ -493,14 +539,17 @@ fn compute_multi_channel_fft(
             .map(|&x| Complex::new(x, 0.0))
             .collect();
         
+        // ✅ 应用Hanning窗函数
+        apply_hanning_window(&mut fft_input);
+        
         // 执行FFT
         fft.process(&mut fft_input);
         
-        // 计算幅度谱
+        // 计算幅度谱（带归一化）
         let spectrum: Vec<f64> = fft_input
             .iter()
-            .take(FFT_WINDOW_SIZE / 2) // 只取正频率部分
-            .map(|c| c.norm())
+            .take(FFT_WINDOW_SIZE / 2)
+            .map(|c| c.norm() / FFT_WINDOW_SIZE as f64)  // ✅ 归一化
             .collect();
         
         // 生成频率bins
@@ -516,6 +565,16 @@ fn compute_multi_channel_fft(
     }
     
     results
+}
+
+// ✅ 新增：Hanning窗函数
+fn apply_hanning_window(data: &mut [Complex<f64>]) {
+    let n = data.len();
+    for (i, sample) in data.iter_mut().enumerate() {
+        let window_val = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64).cos());
+        sample.re *= window_val;
+        sample.im *= window_val;
+    }
 }
 
 /// 新增：EEG处理器统计信息
