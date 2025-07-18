@@ -120,7 +120,6 @@ async function connectToSelectedStream() {
       // 初始化画布组件
       timeDomainCanvasRef.value?.initDataBuffer();
       timeDomainCanvasRef.value?.initCanvas();
-      frequencyDomainCanvasRef.value?.initSpectrumCanvas();
       
       // 启动渲染循环
       timeDomainCanvasRef.value?.startRenderLoop();
@@ -376,7 +375,7 @@ onMounted(async () => {
           :channel-visibility="channelVisibility"
           :selected-channels="selectedChannels"
           :spectrum-data="spectrumData"
-          :max-freq="50"
+          :max-freq="60"
           @update-frequency-rate="updateFrequencyRate"
         />
       </div>
