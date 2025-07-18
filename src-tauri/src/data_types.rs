@@ -40,6 +40,7 @@ pub struct FreqData {
     pub channel_index: u32,
     pub spectrum: Vec<f64>,
     pub frequency_bins: Vec<f64>,
+    pub batch_id: Option<u64>,  // ✅ 添加批次ID关联
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
