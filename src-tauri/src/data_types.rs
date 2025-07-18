@@ -49,38 +49,6 @@ pub struct FramePayload {
     pub frequency_domain: Vec<FreqData>,
 }
 
-// 内部控制命令
-#[derive(Debug, Clone)]
-pub enum ControlCommand {
-    Connect(String),
-    Disconnect,
-    Stop,
-    StartRecording(String),
-    StopRecording,
-}
-
-#[derive(Debug, Clone)]
-pub enum StatusUpdate {
-    Connected(StreamInfo),
-    Disconnected,
-    RecordingStarted(String),
-    RecordingStopped,
-    Error(String),
-}
-
-// 新增录制统计信息的序列化支持
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct RecordingStats {
-    pub filename: String,
-    pub duration_seconds: f64,
-    pub samples_written: u64,
-    pub channels_count: u32,
-    pub sample_rate: f64,
-    pub start_time: String,  // 序列化为字符串
-    pub file_size_bytes: u64,
-}
-
-// 在 data_types.rs 中添加
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConnectionStatus {

@@ -35,10 +35,18 @@ enum ControlCommand {
         name: String, 
         response_tx: mpsc::Sender<Result<StreamInfo, AppError>> 
     },
-    GetCurrentStream { 
-        response_tx: mpsc::Sender<Option<StreamInfo>> 
+    GetStats { 
+        response_tx: mpsc::Sender<WorkerStats> 
     },
     Stop,
+}
+
+// 工作线程统计信息
+#[derive(Debug, Clone)]
+struct WorkerStats {
+    samples_processed: u64,
+    streams_discovered: u32,
+    start_time: std::time::Instant,
 }
 
 impl LslManager {
@@ -133,6 +141,18 @@ impl LslManager {
     pub async fn stop(mut self) -> Result<LslManagerStats, AppError> {
         println!("🛑 Stopping LSL Manager");
         
+        // 先获取工作线程统计信息
+        let worker_stats = if self.is_running {
+            let (stats_tx, stats_rx) = mpsc::channel();
+            if self.control_tx.send(ControlCommand::GetStats { response_tx: stats_tx }).is_ok() {
+                stats_rx.recv_timeout(Duration::from_secs(1)).ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
         // 发送停止命令
         if let Err(_) = self.control_tx.send(ControlCommand::Stop) {
             println!("⚠️  Control channel already closed");
@@ -146,15 +166,35 @@ impl LslManager {
             }
         }
         
-        // 生成统计信息
-        let stats = LslManagerStats {
-            streams_discovered: 0, // TODO: 从工作线程收集
-            samples_received: 0,   // TODO: 从工作线程收集
-            connection_duration_seconds: 0.0, // TODO: 计算实际时长
-            final_stream: self.current_stream,
+        // 生成真实的统计信息
+        let stats = if let Some(worker_stats) = worker_stats {
+            let connection_duration = worker_stats.start_time.elapsed().as_secs_f64();
+            LslManagerStats {
+                streams_discovered: worker_stats.streams_discovered,
+                samples_received: worker_stats.samples_processed,
+                connection_duration_seconds: connection_duration,
+                final_stream: self.current_stream,
+            }
+        } else {
+            // 回退到默认统计
+            LslManagerStats {
+                streams_discovered: 0,
+                samples_received: 0,
+                connection_duration_seconds: 0.0,
+                final_stream: self.current_stream,
+            }
         };
         
-        println!("📊 LSL Manager stopped: {:?}", stats);
+        // ✅ 实际使用统计字段
+        println!("📊 LSL Manager stopped:");
+        println!("   - Streams discovered: {}", stats.streams_discovered);
+        println!("   - Samples received: {}", stats.samples_received);
+        println!("   - Connection duration: {:.2}s", stats.connection_duration_seconds);
+        if let Some(ref stream) = stats.final_stream {
+            println!("   - Final stream: {} ({}Hz, {} channels)", 
+                stream.name, stream.sample_rate, stream.channels_count);
+        }
+        
         Ok(stats)
     }
     
@@ -167,21 +207,30 @@ impl LslManager {
         
         let mut current_inlet: Option<lsl::StreamInlet> = None;
         let mut sample_count = 0u64;
+        let mut discovery_count = 0u32;
+        let start_time = std::time::Instant::now();
         
         loop {
             // 检查控制命令
             match control_rx.try_recv() {
                 Ok(ControlCommand::DiscoverStreams { response_tx }) => {
                     let result = Self::discover_streams_impl();
+                    if result.is_ok() {
+                        discovery_count += 1;
+                    }
                     let _ = response_tx.send(result);
                 }
                 Ok(ControlCommand::ConnectToStream { name, response_tx }) => {
                     let result = Self::connect_to_stream_impl(&name, &mut current_inlet);
                     let _ = response_tx.send(result);
                 }
-                Ok(ControlCommand::GetCurrentStream { response_tx }) => {
-                    // TODO: 发送当前流信息
-                    let _ = response_tx.send(None);
+                Ok(ControlCommand::GetStats { response_tx }) => {
+                    let stats = WorkerStats {
+                        samples_processed: sample_count,
+                        streams_discovered: discovery_count,
+                        start_time,
+                    };
+                    let _ = response_tx.send(stats);
                 }
                 Ok(ControlCommand::Stop) => {
                     println!("🛑 Worker received stop command");
@@ -362,7 +411,7 @@ impl LslManager {
     }
 }
 
-// ✅ 修复：统计信息结构体
+// ✅ 保持统计信息结构体，现在字段会被实际使用
 #[derive(Debug, Clone)]
 pub struct LslManagerStats {
     pub streams_discovered: u32,

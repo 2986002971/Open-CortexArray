@@ -15,20 +15,15 @@ pub struct EdfRecorder {
     
     // EDF+配置参数
     samples_per_record: usize,    // 每个数据记录的样本数
-    record_duration_sec: f64,     // 每个记录的时长（秒）
     
     // 录制元数据
     start_time: DateTime<Utc>,
-    patient_id: String,
-    recording_info: String,
 }
 
 impl EdfRecorder {
     pub fn new(
         filename: String, 
         stream_info: StreamInfo,
-        patient_id: Option<String>,
-        recording_info: Option<String>
     ) -> Result<Self, AppError> {
         
         // 计算EDF+参数
@@ -40,10 +35,6 @@ impl EdfRecorder {
         
         // 设置文件头信息
         let start_time = Utc::now();
-        let patient_id = patient_id.unwrap_or_else(|| "Unknown".to_string());
-        let recording_info = recording_info.unwrap_or_else(|| 
-            format!("EEG Recording from {} at {}", stream_info.source_id, start_time.format("%Y-%m-%d %H:%M:%S"))
-        );
         
         // 为每个EEG通道添加信号参数
         for ch_idx in 0..stream_info.channels_count {
@@ -54,7 +45,7 @@ impl EdfRecorder {
                 physical_min: -100.0,    // μV 物理最小值
                 digital_max: 32767,      // 16位ADC最大值
                 digital_min: -32768,     // 16位ADC最小值
-                samples_per_record: samples_per_record as i32,  // ✅ 修复：转换为i32
+                samples_per_record: samples_per_record as i32,
                 physical_dimension: "uV".to_string(),
                 prefilter: "HP:0.1Hz LP:70Hz".to_string(),
                 transducer: "AgAgCl electrodes".to_string(),
@@ -76,10 +67,7 @@ impl EdfRecorder {
             samples_written: 0,
             channel_buffers,
             samples_per_record,
-            record_duration_sec,
             start_time,
-            patient_id,
-            recording_info,
         })
     }
     
@@ -130,26 +118,7 @@ impl EdfRecorder {
         Ok(())
     }
     
-    pub fn write_annotation(&mut self, timestamp: f64, description: &str) -> Result<(), AppError> {
-        // TODO: 如果edfplus库支持注释写入，在这里实现
-        // 目前只是打印日志
-        println!("Annotation at {:.3}s: {}", timestamp, description);
-        Ok(())
-    }
-    
-    pub fn get_recording_stats(&self) -> RecordingStats {
-        let duration_sec = self.samples_written as f64 / self.stream_info.sample_rate;
-        
-        RecordingStats {
-            filename: self.filename.clone(),
-            duration_seconds: duration_sec,
-            samples_written: self.samples_written,
-            channels_count: self.stream_info.channels_count,
-            sample_rate: self.stream_info.sample_rate,
-            start_time: self.start_time,
-            file_size_bytes: 0, // TODO: 获取实际文件大小
-        }
-    }
+    // TODO: 注释写入待实现
     
     pub fn close(mut self) -> Result<RecordingStats, AppError> {
         // ✅ 修复：在finalize之前先收集统计信息
@@ -196,16 +165,26 @@ impl EdfRecorder {
     }
 }
 
-// 录制统计信息
-#[derive(Debug, Clone)]
+// 录制统计信息 - 保留 DateTime<Utc> 类型，提供更好的类型安全性
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RecordingStats {
     pub filename: String,
     pub duration_seconds: f64,
     pub samples_written: u64,
     pub channels_count: u32,
     pub sample_rate: f64,
+    #[serde(serialize_with = "serialize_datetime")]
     pub start_time: DateTime<Utc>,
     pub file_size_bytes: u64,
+}
+
+/// 自定义序列化函数，将 DateTime<Utc> 转换为 ISO 8601 字符串
+fn serialize_datetime<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let s = dt.to_rfc3339();
+    serializer.serialize_str(&s)
 }
 
 #[cfg(test)]
@@ -226,8 +205,6 @@ mod tests {
         let recorder = EdfRecorder::new(
             "test_recording.edf".to_string(),
             stream_info,
-            Some("Test Patient".to_string()),
-            Some("Test Recording".to_string())
         );
         
         assert!(recorder.is_ok());

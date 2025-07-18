@@ -5,7 +5,6 @@ use crate::fft_processor::{FftProcessor, utils as fft_utils}; // ✅ 导入FFT�
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::{AppHandle, Emitter};
-use std::collections::VecDeque;
 use crossbeam_channel;
 use std::time::Duration;
 
@@ -71,6 +70,7 @@ impl EegProcessor {
         drop(is_running);
         
         // 等待所有线程结束
+        let threads_spawned = self.thread_handles.len() as u32;
         while let Some(handle) = self.thread_handles.pop() {
             if let Err(e) = handle.await {
                 println!("Thread join error: {:?}", e);
@@ -89,13 +89,28 @@ impl EegProcessor {
         
         // 生成处理器统计信息
         let stats = EegProcessorStats {
-            stream_info: self.stream_info,
-            recording_stats,
-            threads_spawned: 4, // FFT, Recording, TimeDomain, Frontend
-            // TODO: 添加更多统计信息
+            stream_info: self.stream_info.clone(),
+            recording_stats: recording_stats.clone(),
+            threads_spawned,
         };
         
-        println!("📊 EEG Processor stopped: {:?}", stats);
+        // ✅ 实际使用统计字段
+        println!("📊 EEG Processor stopped:");
+        println!("   - Stream: {} ({}Hz, {} channels)", 
+                 stats.stream_info.name, 
+                 stats.stream_info.sample_rate, 
+                 stats.stream_info.channels_count);
+        println!("   - Threads spawned: {}", stats.threads_spawned);
+        
+        if let Some(ref rec_stats) = stats.recording_stats {
+            println!("   - Recording stats:");
+            println!("     • Samples recorded: {}", rec_stats.samples_written);
+            println!("     • Duration: {:.2}s", rec_stats.duration_seconds);
+            println!("     • File size: {} bytes", rec_stats.file_size_bytes);
+        } else {
+            println!("   - No recording session");
+        }
+        
         Ok(stats)
     }
     
@@ -113,8 +128,6 @@ impl EegProcessor {
         let new_recorder = EdfRecorder::new(
             filename.to_string(),
             self.stream_info.clone(),
-            None, // patient_id
-            None, // recording_info
         )?;
         
         *recorder_guard = Some(new_recorder);

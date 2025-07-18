@@ -199,7 +199,6 @@ fn apply_hanning_window(data: &mut [Complex<f64>]) {
 
 /// FFT相关的公共常量和函数
 pub mod constants {
-    pub const FFT_WINDOW_SIZE: usize = 256;
     pub const OUTPUT_FREQ_BINS: usize = 50;
     pub const TARGET_FREQ_MIN: u32 = 1;
     pub const TARGET_FREQ_MAX: u32 = 50;
@@ -208,34 +207,6 @@ pub mod constants {
 /// FFT配置和优化相关的实用函数
 pub mod utils {
     use super::constants::*;
-    
-    /// 获取适合特定采样率的FFT配置
-    pub fn get_fft_config(sample_rate: f64) -> FftConfig {
-        let freq_resolution = sample_rate / FFT_WINDOW_SIZE as f64;
-        let nyquist_freq = sample_rate / 2.0;
-        
-        FftConfig {
-            window_size: FFT_WINDOW_SIZE,
-            freq_resolution,
-            nyquist_freq,
-            can_reach_50hz: nyquist_freq >= TARGET_FREQ_MAX as f64,
-            recommended_min_freq: if freq_resolution > 2.0 { 
-                (freq_resolution.ceil() as u32).max(TARGET_FREQ_MIN)
-            } else { 
-                TARGET_FREQ_MIN 
-            },
-        }
-    }
-    
-    /// FFT配置信息
-    #[derive(Debug, Clone)]
-    pub struct FftConfig {
-        pub window_size: usize,
-        pub freq_resolution: f64,
-        pub nyquist_freq: f64,
-        pub can_reach_50hz: bool,
-        pub recommended_min_freq: u32,
-    }
     
     /// 创建空的频域数据
     pub fn create_empty_freq_data(channels_count: u32) -> Vec<crate::data_types::FreqData> {

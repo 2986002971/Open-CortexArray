@@ -306,13 +306,13 @@ pub fn run() {
             shutdown_system,
             get_system_health
         ])
-        .setup(|app| {
+        .setup(|_app| {
             println!("🎯 EEG Visualization Backend Started");
             println!("📡 Ready to discover LSL streams");
             println!("🖥️  Frontend interface available");
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, event| {
             match event {
                 tauri::WindowEvent::CloseRequested { .. } => {
                     println!("🔌 Window closing, shutting down gracefully");

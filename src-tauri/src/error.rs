@@ -11,9 +11,6 @@ pub enum AppError {
     #[error("Channel communication error: {0}")]
     Channel(String),
     
-    #[error("FFT calculation error: {0}")]
-    Fft(String),
-    
     #[error("Recording error: {0}")]
     Recording(String),
     
@@ -22,12 +19,6 @@ pub enum AppError {
     
     #[error("Invalid configuration: {0}")]
     Config(String),
-}
-
-impl From<tokio::sync::mpsc::error::SendError<crate::data_types::ControlCommand>> for AppError {
-    fn from(err: tokio::sync::mpsc::error::SendError<crate::data_types::ControlCommand>) -> Self {
-        AppError::Channel(err.to_string())
-    }
 }
 
 // 添加对std::sync::mpsc的支持
