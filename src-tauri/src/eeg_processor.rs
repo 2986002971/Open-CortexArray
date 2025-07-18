@@ -136,6 +136,84 @@ impl EegProcessor {
         Ok(())
     }
     
+    /// ✅ 数据分发器 - 确保每个样本都复制给所有消费者
+    async fn spawn_data_distributor(
+        &self,
+        data_rx: crossbeam_channel::Receiver<EegSample>,
+        recording_tx: crossbeam_channel::Sender<EegSample>,
+        time_domain_tx: crossbeam_channel::Sender<EegSample>,
+        is_running: Arc<tokio::sync::RwLock<bool>>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            println!("🟣 Data distributor started - ensuring no data loss");
+            
+            let mut samples_distributed = 0u64;
+            let mut recording_failures = 0u64;
+            let mut time_domain_failures = 0u64;
+            let mut last_stats_time = std::time::Instant::now();
+            
+            loop {
+                // 非阻塞检查停止状态
+                {
+                    let running = is_running.try_read();
+                    if let Ok(running) = running {
+                        if !*running {
+                            println!("🟣 Data distributor stopping");
+                            break;
+                        }
+                    }
+                }
+                
+                // ✅ 阻塞接收确保不丢失任何样本
+                match data_rx.recv() {
+                    Ok(sample) => {
+                        samples_distributed += 1;
+                        
+                        // ✅ 克隆样本并分发到所有消费者
+                        let sample_for_recording = sample.clone();
+                        let sample_for_time_domain = sample;
+                        
+                        // 分发到录制线程（高优先级）
+                        if let Err(_) = recording_tx.send(sample_for_recording) {
+                            recording_failures += 1;
+                            if recording_failures <= 5 {
+                                println!("⚠️ Recording channel dropped (failure #{})", recording_failures);
+                            }
+                        }
+                        
+                        // 分发到时域收集器
+                        if let Err(_) = time_domain_tx.send(sample_for_time_domain) {
+                            time_domain_failures += 1;
+                            if time_domain_failures <= 5 {
+                                println!("⚠️ Time domain channel dropped (failure #{})", time_domain_failures);
+                            }
+                        }
+                        
+                        // ✅ 每秒统计分发状态
+                        if last_stats_time.elapsed() >= Duration::from_secs(1) {
+                            println!("🟣 Distributor: {}Hz distributed, failures: rec={}, time={}", 
+                                     samples_distributed, recording_failures, time_domain_failures);
+                            last_stats_time = std::time::Instant::now();
+                        }
+                        
+                        // 如果两个通道都断开，退出分发器
+                        if recording_failures > 0 && time_domain_failures > 0 {
+                            println!("🟣 All consumers disconnected, distributor stopping");
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        println!("🟣 Data distributor: source disconnected");
+                        break;
+                    }
+                }
+            }
+            
+            println!("🟣 Data distributor stopped - total distributed: {}, failures: rec={}, time={}", 
+                     samples_distributed, recording_failures, time_domain_failures);
+        })
+    }
+    
     /// 全crossbeam处理管道
     async fn start_crossbeam_pipeline(
         &mut self,
@@ -152,22 +230,35 @@ impl EegProcessor {
             is_running.clone(),
         ));
         
-        // 通道配置
+        // ✅ 创建分发通道 - 避免数据竞争
+        let (recording_tx, recording_rx) = crossbeam_channel::unbounded::<EegSample>();
+        let (time_domain_data_tx, time_domain_data_rx) = crossbeam_channel::unbounded::<EegSample>();
+        
+        // 下游通道保持不变
         let (freq_tx, freq_rx) = crossbeam_channel::unbounded();
         let (time_domain_tx, time_domain_rx) = crossbeam_channel::unbounded();
         let (fft_trigger_tx, fft_trigger_rx) = crossbeam_channel::unbounded();
         
-        // 录制线程
+        // ✅ 数据分发器 - 第一优先级线程
+        let distributor_handle = self.spawn_data_distributor(
+            data_rx,                    // 从LSL接收
+            recording_tx,               // 分发给录制线程
+            time_domain_data_tx,        // 分发给时域收集器
+            is_running.clone()
+        ).await;
+        self.thread_handles.push(distributor_handle);
+        
+        // ✅ 录制线程 - 使用专用通道，不再竞争
         let recording_handle = self.spawn_recording_thread(
-            data_rx.clone(),
+            recording_rx,               // 专用录制通道
             recorder,
             is_running.clone()
         ).await;
         self.thread_handles.push(recording_handle);
         
-        // 时域收集器
+        // ✅ 时域收集器 - 使用专用通道，不再竞争
         let time_domain_handle = self.spawn_time_domain_collector(
-            data_rx,
+            time_domain_data_rx,        // 专用时域通道
             time_domain_tx,
             fft_trigger_tx,
             stream_info.clone(),
@@ -175,7 +266,7 @@ impl EegProcessor {
         ).await;
         self.thread_handles.push(time_domain_handle);
         
-        // ✅ FFT线程（使用专门的FFT处理器）
+        // FFT线程和前端线程保持不变
         if let Some(fft_processor) = &self.fft_processor {
             let fft_handle = fft_processor.spawn_fft_thread(
                 fft_trigger_rx,
@@ -184,7 +275,6 @@ impl EegProcessor {
             self.thread_handles.push(fft_handle);
         }
         
-        // 前端线程
         let frontend_handle = self.spawn_frontend_thread(
             freq_rx,
             time_domain_rx,
@@ -198,57 +288,77 @@ impl EegProcessor {
         Ok(())
     }
     
-    /// 录制线程 - 最高优先级，确保数据完整性
+    /// 录制线程 - 最高优先级，专用通道，确保数据完整性
     async fn spawn_recording_thread(
         &self,
-        data_rx: crossbeam_channel::Receiver<EegSample>,
+        recording_rx: crossbeam_channel::Receiver<EegSample>,  // ✅ 专用通道
         recorder: Arc<Mutex<Option<EdfRecorder>>>,
         is_running: Arc<tokio::sync::RwLock<bool>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            println!("🔴 Recording thread started (HIGH PRIORITY)");
+            println!("🔴 Recording thread started (DEDICATED CHANNEL)");
             
-            let mut samples_processed = 0u64;
+            let mut samples_recorded = 0u64;
+            let mut recording_errors = 0u64;
             let mut last_report = std::time::Instant::now();
             
             loop {
-                // 检查运行状态
-                {
-                    let running = is_running.read().await;
-                    if !*running {
-                        println!("🔴 Recording thread stopping - processed {} samples", samples_processed);
-                        break;
-                    }
-                }
-                
-                // 阻塞接收确保不丢失数据
-                match data_rx.recv() {
+                // ✅ 阻塞接收，确保不丢失任何样本
+                match recording_rx.recv() {
                     Ok(sample) => {
-                        let mut recorder_guard = recorder.lock().await;
+                        // 非阻塞检查停止状态
+                        {
+                            let running = is_running.try_read();
+                            if let Ok(running) = running {
+                                if !*running {
+                                    // 即使停止，也要处理完当前样本
+                                    println!("🔴 Recording stopping after processing current sample");
+                                }
+                            }
+                        }
                         
+                        // 录制样本
+                        let mut recorder_guard = recorder.lock().await;
                         if let Some(recorder) = recorder_guard.as_mut() {
-                            if let Err(e) = recorder.write_sample(&sample) {
-                                println!("❌ CRITICAL: Recording error: {}", e);
-                                // 对于科研数据，可能需要更严格的错误处理
-                            } else {
-                                samples_processed += 1;
-                                
-                                // 每秒报告一次处理状态
-                                if last_report.elapsed() > Duration::from_secs(1) {
-                                    println!("📊 Recording: {} samples/sec", samples_processed);
-                                    last_report = std::time::Instant::now();
+                            match recorder.write_sample(&sample) {
+                                Ok(_) => {
+                                    samples_recorded += 1;
+                                    
+                                    // 每秒报告录制状态
+                                    if last_report.elapsed() >= Duration::from_secs(1) {
+                                        println!("🔴 Recording: {}Hz (errors: {})", 
+                                                 samples_recorded, recording_errors);
+                                        last_report = std::time::Instant::now();
+                                    }
+                                }
+                                Err(e) => {
+                                    recording_errors += 1;
+                                    if recording_errors <= 10 {
+                                        println!("❌ Recording error #{}: {}", recording_errors, e);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 检查停止状态（在处理完样本后）
+                        {
+                            let running = is_running.try_read();
+                            if let Ok(running) = running {
+                                if !*running {
+                                    break;
                                 }
                             }
                         }
                     }
                     Err(_) => {
-                        println!("🔴 Recording: data source disconnected");
+                        println!("🔴 Recording: data distributor disconnected");
                         break;
                     }
                 }
             }
             
-            println!("🔴 Recording thread stopped - total: {} samples", samples_processed);
+            println!("🔴 Recording thread stopped - recorded: {}, errors: {}", 
+                     samples_recorded, recording_errors);
         })
     }
     
