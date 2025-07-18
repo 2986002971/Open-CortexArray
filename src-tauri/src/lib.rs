@@ -3,6 +3,7 @@ mod data_types;
 mod eeg_processor;
 mod recorder;
 mod error;
+mod fft_processor;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;

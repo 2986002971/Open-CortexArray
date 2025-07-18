@@ -1,45 +1,37 @@
 use crate::data_types::*;
 use crate::error::AppError;
 use crate::recorder::EdfRecorder;
+use crate::fft_processor::{FftProcessor, utils as fft_utils}; // ✅ 导入FFT模块
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::{AppHandle, Emitter};
-use rustfft::{FftPlanner, num_complex::Complex};
 use std::collections::VecDeque;
 use crossbeam_channel;
 use std::time::Duration;
 
-// ✅ 简化的常量定义
-const FFT_WINDOW_SIZE: usize = 256;        // 固定256点FFT
-const OUTPUT_FREQ_BINS: usize = 50;        // 固定输出1-50Hz（50个bin）
+// ✅ 只保留时域处理相关的常量
 const FRAME_INTERVAL_MS: u64 = 33;
 
 pub struct EegProcessor {
     stream_info: StreamInfo,
     app_handle: AppHandle,
-    
-    // 数据源：来自LslManager的数据通道
     data_rx: Option<crossbeam_channel::Receiver<EegSample>>,
-    
-    // 录制器
     recorder: Arc<Mutex<Option<EdfRecorder>>>,
-    
-    // 运行状态
     is_running: Arc<tokio::sync::RwLock<bool>>,
-    
-    // 线程句柄管理
     thread_handles: Vec<tokio::task::JoinHandle<()>>,
+    fft_processor: Option<FftProcessor>, // ✅ 添加FFT处理器
 }
 
 impl EegProcessor {
     pub fn new(stream_info: StreamInfo, app_handle: AppHandle) -> Result<Self, AppError> {
         let processor = Self {
-            stream_info,
+            stream_info: stream_info.clone(),
             app_handle,
             data_rx: None,
             recorder: Arc::new(Mutex::new(None)),
             is_running: Arc::new(tokio::sync::RwLock::new(false)),
             thread_handles: Vec::new(),
+            fft_processor: None, // 延迟初始化
         };
         
         Ok(processor)
@@ -144,7 +136,7 @@ impl EegProcessor {
         Ok(())
     }
     
-    /// 全crossbeam处理管道 - 为科研数据优化
+    /// 全crossbeam处理管道
     async fn start_crossbeam_pipeline(
         &mut self,
         data_rx: crossbeam_channel::Receiver<EegSample>,
@@ -154,12 +146,18 @@ impl EegProcessor {
         let recorder = self.recorder.clone();
         let is_running = self.is_running.clone();
         
-        // ✅ 更新通道配置
+        // ✅ 初始化FFT处理器
+        self.fft_processor = Some(FftProcessor::new(
+            stream_info.clone(),
+            is_running.clone(),
+        ));
+        
+        // 通道配置
         let (freq_tx, freq_rx) = crossbeam_channel::unbounded();
         let (time_domain_tx, time_domain_rx) = crossbeam_channel::unbounded();
-        let (fft_trigger_tx, fft_trigger_rx) = crossbeam_channel::unbounded(); // ✅ 新增FFT触发通道
+        let (fft_trigger_tx, fft_trigger_rx) = crossbeam_channel::unbounded();
         
-        // 录制线程（保持不变）
+        // 录制线程
         let recording_handle = self.spawn_recording_thread(
             data_rx.clone(),
             recorder,
@@ -167,26 +165,26 @@ impl EegProcessor {
         ).await;
         self.thread_handles.push(recording_handle);
         
-        // ✅ 时域收集器（带FFT触发）
+        // 时域收集器
         let time_domain_handle = self.spawn_time_domain_collector(
             data_rx,
             time_domain_tx,
-            fft_trigger_tx, // ✅ 传递FFT触发器
+            fft_trigger_tx,
             stream_info.clone(),
             is_running.clone()
         ).await;
         self.thread_handles.push(time_domain_handle);
         
-        // ✅ FFT线程（由批次触发）
-        let fft_handle = self.spawn_fft_thread(
-            fft_trigger_rx, // ✅ 从触发器接收
-            freq_tx,
-            stream_info.clone(),
-            is_running.clone()
-        ).await;
-        self.thread_handles.push(fft_handle);
+        // ✅ FFT线程（使用专门的FFT处理器）
+        if let Some(fft_processor) = &self.fft_processor {
+            let fft_handle = fft_processor.spawn_fft_thread(
+                fft_trigger_rx,
+                freq_tx,
+            ).await;
+            self.thread_handles.push(fft_handle);
+        }
         
-        // 前端线程（保持不变）
+        // 前端线程
         let frontend_handle = self.spawn_frontend_thread(
             freq_rx,
             time_domain_rx,
@@ -338,107 +336,11 @@ impl EegProcessor {
         })
     }
     
-    /// 重构：基于批次触发的FFT线程
-    async fn spawn_fft_thread(
-        &self,
-        fft_trigger_rx: crossbeam_channel::Receiver<(u64, Vec<EegSample>)>, // ✅ 接收(batch_id, samples)
-        freq_tx: crossbeam_channel::Sender<(u64, Vec<FreqData>)>, // ✅ 发送(batch_id, freq_data)
-        stream_info: StreamInfo,
-        is_running: Arc<tokio::sync::RwLock<bool>>,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(async move {
-            println!("🟡 FFT thread started (batch-triggered with ID tracking)");
-            
-            let mut fft_planner = FftPlanner::new();
-            let fft = fft_planner.plan_fft_forward(FFT_WINDOW_SIZE);
-            
-            let mut channel_windows: Vec<VecDeque<f64>> = (0..stream_info.channels_count)
-                .map(|_| VecDeque::with_capacity(FFT_WINDOW_SIZE + 100))
-                .collect();
-            
-            let mut batches_processed = 0u64;
-            let mut ffts_computed = 0u64;
-            
-            loop {
-                tokio::select! {
-                    batch_result = tokio::task::spawn_blocking({
-                        let fft_trigger_rx = fft_trigger_rx.clone();
-                        move || fft_trigger_rx.recv()
-                    }) => {
-                        match batch_result {
-                            Ok(Ok((batch_id, sample_batch))) => {  // ✅ 解包批次ID
-                                batches_processed += 1;
-                                
-                                // 更新滑动窗口
-                                for sample in sample_batch {
-                                    for (ch_idx, &value) in sample.channels.iter().enumerate() {
-                                        if ch_idx < channel_windows.len() {
-                                            let window = &mut channel_windows[ch_idx];
-                                            window.push_back(value);
-                                            
-                                            if window.len() > FFT_WINDOW_SIZE {
-                                                window.pop_front();
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                // ✅ 计算FFT并关联批次ID
-                                if channel_windows[0].len() >= FFT_WINDOW_SIZE {
-                                    let mut freq_data = compute_fixed_range_fft(
-                                        &channel_windows,
-                                        fft.as_ref(),
-                                        stream_info.sample_rate,
-                                    );
-                                    
-                                    // ✅ 为每个频域数据关联批次ID
-                                    for freq_item in &mut freq_data {
-                                        freq_item.batch_id = Some(batch_id);
-                                    }
-                                    
-                                    if freq_tx.send((batch_id, freq_data)).is_err() {
-                                        println!("🟡 FFT: frequency receiver dropped");
-                                        break;
-                                    }
-                                    
-                                    ffts_computed += 1;
-                                    
-                                    if ffts_computed <= 5 {
-                                        println!("🟡 FFT #{} for batch #{} → {} channels, 1-50Hz", 
-                                                 ffts_computed, batch_id, stream_info.channels_count);
-                                    }
-                                }
-                            }
-                            Ok(Err(_)) => {
-                                println!("🟡 FFT: trigger channel disconnected");
-                                break;
-                            }
-                            Err(e) => {
-                                println!("🟡 FFT: batch processing error: {:?}", e);
-                            }
-                        }
-                    }
-                    
-                    // 定期检查停止状态
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                        let running = is_running.read().await;
-                        if !*running {
-                            println!("🟡 FFT thread stopping");
-                            break;
-                        }
-                    }
-                }
-            }
-            
-            println!("🟡 FFT thread stopped - batches: {}, FFTs: {}", batches_processed, ffts_computed);
-        })
-    }
 
-
-    /// 前端发送线程 - 30Hz刷新，总是发送可用数据
+    /// 前端发送线程 - 使用FFT工具函数
     async fn spawn_frontend_thread(
         &self,
-        freq_rx: crossbeam_channel::Receiver<(u64, Vec<FreqData>)>, // ✅ 接收带批次ID的频域数据
+        freq_rx: crossbeam_channel::Receiver<(u64, Vec<FreqData>)>,
         time_domain_rx: crossbeam_channel::Receiver<EegBatch>,
         app_handle: AppHandle,
         channels_count: u32,
@@ -452,22 +354,14 @@ impl EegProcessor {
                 Duration::from_millis(FRAME_INTERVAL_MS)
             );
             
-            // ✅ 缓冲区：存储等待匹配的数据
             let mut freq_buffer: std::collections::HashMap<u64, Vec<FreqData>> = std::collections::HashMap::new();
             let mut time_buffer: std::collections::HashMap<u64, EegBatch> = std::collections::HashMap::new();
             
             let mut frame_count = 0u64;
             let mut next_expected_batch_id = 0u64;
             
-            // 创建空数据函数
-            let create_empty_freq_data = || -> Vec<FreqData> {
-                (0..channels_count).map(|i| FreqData {
-                    channel_index: i,
-                    spectrum: vec![0.0; OUTPUT_FREQ_BINS],
-                    frequency_bins: (1..=50).map(|f| f as f64).collect(),
-                    batch_id: None,
-                }).collect()
-            };
+            // ✅ 使用FFT模块的工具函数
+            let create_empty_freq_data = move || fft_utils::create_empty_freq_data(channels_count);
             
             loop {
                 tokio::select! {
@@ -482,7 +376,7 @@ impl EegProcessor {
                             }
                         }
                         
-                        // ✅ 收集所有可用数据到缓冲区
+                        // 收集数据到缓冲区
                         while let Ok((batch_id, freq_data)) = freq_rx.try_recv() {
                             freq_buffer.insert(batch_id, freq_data);
                         }
@@ -491,15 +385,13 @@ impl EegProcessor {
                             time_buffer.insert(time_domain.batch_id, time_domain);
                         }
                         
-                        // ✅ 尝试发送匹配的数据对
+                        // 发送匹配的数据对
                         let mut sent_data = false;
                         
-                        // 检查是否有完整的数据对可以发送
                         if let (Some(time_domain), freq_data) = (
                             time_buffer.remove(&next_expected_batch_id),
                             freq_buffer.remove(&next_expected_batch_id)
                         ) {
-                            // ✅ 有匹配的数据对
                             let freq_data = freq_data.unwrap_or_else(|| create_empty_freq_data());
                             
                             let payload = FramePayload {
@@ -521,7 +413,6 @@ impl EegProcessor {
                             
                             next_expected_batch_id += 1;
                         } else if let Some(time_domain) = time_buffer.remove(&next_expected_batch_id) {
-                            // ✅ 只有时域数据，FFT还在计算中
                             let freq_data = create_empty_freq_data();
                             
                             let payload = FramePayload {
@@ -544,7 +435,6 @@ impl EegProcessor {
                             next_expected_batch_id += 1;
                         }
                         
-                        // ✅ 如果没有匹配数据，发送空帧保持节拍
                         if !sent_data {
                             let empty_time = EegBatch {
                                 samples: vec![],
@@ -565,12 +455,11 @@ impl EegProcessor {
                             }
                         }
                         
-                        // ✅ 清理过旧的缓冲区数据（防止内存泄漏）
+                        // 清理缓冲区
                         let cleanup_threshold = next_expected_batch_id.saturating_sub(10);
                         freq_buffer.retain(|&batch_id, _| batch_id >= cleanup_threshold);
                         time_buffer.retain(|&batch_id, _| batch_id >= cleanup_threshold);
                         
-                        // 定期报告缓冲区状态
                         if frame_count % 300 == 0 && frame_count > 0 {
                             println!("🔵 Buffer status: freq={}, time={}, next_expected={}", 
                                      freq_buffer.len(), time_buffer.len(), next_expected_batch_id);
@@ -581,78 +470,6 @@ impl EegProcessor {
             
             println!("🔵 Frontend thread stopped - frames sent: {}", frame_count);
         })
-    }
-}
-
-// FFT计算辅助函数保持不变
-// ✅ 改进的FFT计算函数
-fn compute_fixed_range_fft(
-    channel_windows: &[VecDeque<f64>],
-    fft: &dyn rustfft::Fft<f64>,
-    sample_rate: f64,
-) -> Vec<FreqData> {
-    let mut results = Vec::new();
-    
-    // ✅ 预计算频率bin映射
-    let freq_resolution = sample_rate / FFT_WINDOW_SIZE as f64;
-    
-    for (ch_idx, window) in channel_windows.iter().enumerate() {
-        if window.len() < FFT_WINDOW_SIZE {
-            continue;
-        }
-        
-        // 准备FFT输入数据
-        let mut fft_input: Vec<Complex<f64>> = window
-            .iter()
-            .take(FFT_WINDOW_SIZE)
-            .map(|&x| Complex::new(x, 0.0))
-            .collect();
-        
-        // 应用Hanning窗函数
-        apply_hanning_window(&mut fft_input);
-        
-        // 执行FFT
-        fft.process(&mut fft_input);
-        
-        // ✅ 直接构建1-50Hz的输出
-        let mut spectrum = Vec::with_capacity(OUTPUT_FREQ_BINS);
-        let mut frequency_bins = Vec::with_capacity(OUTPUT_FREQ_BINS);
-        
-        for target_freq in 1..=50 {  // 1Hz到50Hz
-            let target_freq_f64 = target_freq as f64;
-            
-            // 找到最接近的FFT bin
-            let fft_bin_index = (target_freq_f64 / freq_resolution).round() as usize;
-            
-            // 获取幅度（如果bin存在）
-            let magnitude = if fft_bin_index < fft_input.len() / 2 {
-                fft_input[fft_bin_index].norm() / FFT_WINDOW_SIZE as f64
-            } else {
-                0.0  // 超出Nyquist频率，设为0
-            };
-            
-            spectrum.push(magnitude);
-            frequency_bins.push(target_freq_f64);
-        }
-        
-        results.push(FreqData {
-            channel_index: ch_idx as u32,
-            spectrum,
-            frequency_bins,
-            batch_id: None,  // ✅ 默认无批次关联
-        });
-    }
-    
-    results
-}
-
-// ✅ 新增：Hanning窗函数
-fn apply_hanning_window(data: &mut [Complex<f64>]) {
-    let n = data.len();
-    for (i, sample) in data.iter_mut().enumerate() {
-        let window_val = 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / (n - 1) as f64).cos());
-        sample.re *= window_val;
-        sample.im *= window_val;
     }
 }
 
