@@ -1,11 +1,12 @@
 <!-- filepath: src/components/FrequencyDomainCanvas.vue -->
 <template>
   <div class="frequency-panel">
-    <h3>实时频谱分析 (1-{{ maxFreq }}Hz) - WebGL加速</h3>
+    <h3>实时频谱分析 (1-{{ maxFreq }}Hz) - 事件驱动WebGL</h3>
     <canvas 
       ref="spectrumCanvasRef" 
       class="spectrum-canvas"
       :style="{ width: '100%', height: '400px' }"
+      @click="handleCanvasClick"
     ></canvas>
     <div class="frequency-legend">
       <div class="freq-range">1Hz</div>
@@ -15,14 +16,15 @@
     <div class="frequency-status">
       <span class="update-rate">{{ Math.round(updateRate) }}Hz 更新</span>
       <span class="webgl-status">WebGL: {{ webglStatus }}</span>
+      <span v-if="showDebugInfo" class="latency-info">延迟: {{ avgLatency.toFixed(1) }}ms</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
-// ✅ 修复：正确的类名大小写
 import { WebglPlot, WebglLine, ColorRGBA } from 'webgl-plot';
+import { listen } from '@tauri-apps/api/event';
 
 // Props
 interface Props {
@@ -30,14 +32,7 @@ interface Props {
   sampleRate: number;
   channelVisibility: boolean[];
   selectedChannels: Set<number>;
-  spectrumData: FreqData[];
   maxFreq?: number;
-}
-
-interface FreqData {
-  channel_index: number;
-  spectrum: number[];
-  frequency_bins: number[];
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -51,6 +46,18 @@ interface Emits {
 
 const emit = defineEmits<Emits>();
 
+// ✅ 频域数据接口定义
+interface FreqData {
+  channel_index: number;
+  spectrum: number[];
+  frequency_bins: number[];
+}
+
+interface FramePayload {
+  time_domain: any;
+  frequency_domain: FreqData[];
+}
+
 // Canvas相关
 const spectrumCanvasRef = ref<HTMLCanvasElement | null>(null);
 let wglp: WebglPlot | null = null;
@@ -58,16 +65,19 @@ let wglp: WebglPlot | null = null;
 // WebGL状态
 const webglStatus = ref<string>('初始化中...');
 const updateRate = ref(0);
+const showDebugInfo = ref(false);
 
 // 线条管理
 const channelLines: WebglLine[] = [];
 const FREQ_BINS = 50;
 const MAX_AMPLITUDE = 100;
 
-// 性能监控
-let lastFrequencyUpdate = 0;
-let lastFrameTime = 0;
+// ✅ 性能监控：事件驱动模式
 let frameCount = 0;
+let lastFrameTime = 0;
+const avgLatency = ref(0);
+let latencyHistory: number[] = [];
+const MAX_LATENCY_SAMPLES = 10;
 
 // 通道颜色配置
 const channelColors = [
@@ -97,22 +107,19 @@ function initWebGLPlot() {
     canvas.width = rect.width * devicePixelRatio;
     canvas.height = rect.height * devicePixelRatio;
     
-    console.log(`WebGL Canvas: ${canvas.width}x${canvas.height}, DPR: ${devicePixelRatio}`);
+    console.log(`📺 事件驱动频域WebGL Canvas: ${canvas.width}x${canvas.height}`);
     
-    // ✅ 修复实例化：WebglPlot（注意大小写）
+    // 初始化WebGLplot
     wglp = new WebglPlot(canvas);
     
-    // 清空现有线条
-    channelLines.length = 0;
-    
     webglStatus.value = '就绪';
-    console.log('✅ WebGL初始化成功');
+    console.log('✅ 频域事件驱动WebGL初始化成功');
     
     // 初始化通道线条
     initChannelLines();
     
   } catch (error) {
-    console.error('❌ WebGL初始化失败:', error);
+    console.error('❌ 频域WebGL初始化失败:', error);
     webglStatus.value = '失败';
   }
 }
@@ -123,7 +130,7 @@ function initChannelLines() {
   
   console.log(`🎨 初始化 ${props.channelsCount} 个通道的频域线条`);
   
-  // ✅ 修复：使用 removeAllLines() 而不是 removeLine()
+  // 清除现有线条
   wglp.removeAllLines();
   channelLines.length = 0;
   
@@ -143,11 +150,8 @@ function initChannelLines() {
       line.setY(i, channelOffset);
     }
     
-    // ✅ 使用 addLine() 方法（这是 addDataLine 的别名）
     wglp.addLine(line);
     channelLines.push(line);
-    
-    console.log(`📈 通道 ${ch + 1}: 颜色=${color.r.toFixed(2)},${color.g.toFixed(2)},${color.b.toFixed(2)}, 偏移=${channelOffset.toFixed(3)}`);
   }
   
   console.log(`✅ 创建了 ${channelLines.length} 条频域线条`);
@@ -172,31 +176,47 @@ function calculateChannelScale(): number {
   return maxChannelHeight / 2;
 }
 
-// 更新频谱数据
-function updateSpectrumData() {
-  if (!wglp || channelLines.length === 0 || props.spectrumData.length === 0) {
+// ✅ 核心功能：事件驱动的频域渲染
+function handleFrameUpdate(event: any) {
+  const startTime = performance.now();
+  
+  if (!wglp || channelLines.length === 0) {
     return;
   }
   
-  const now = Date.now();
-  frameCount++;
-  
-  // 性能监控
-  if (now - lastFrameTime >= 1000) {
-    updateRate.value = frameCount;
-    emit('update-frequency-rate', updateRate.value);
-    frameCount = 0;
-    lastFrameTime = now;
+  const { frequency_domain } = event.payload;
+  if (!frequency_domain || frequency_domain.length === 0) {
+    return;
   }
   
+  console.log(`🎵 直接处理 ${frequency_domain.length} 个通道的频域数据`);
+  
+  // ✅ 直接处理后端的频域数据
+  updateSpectrumDirect(frequency_domain);
+  
+  // ✅ 一次性WebGL更新
+  try {
+    wglp.update();
+  } catch (error) {
+    console.error('频域WebGL更新错误:', error);
+    return;
+  }
+  
+  // 性能统计
+  const endTime = performance.now();
+  updatePerformanceStats(startTime, endTime);
+}
+
+// ✅ 直接更新频谱：核心渲染逻辑
+function updateSpectrumDirect(spectrumData: FreqData[]) {
   const channelScale = calculateChannelScale();
   
   // 更新每个通道的频谱线条
-  for (const freqData of props.spectrumData) {
+  for (const freqData of spectrumData) {
     const ch = freqData.channel_index;
     
     // 检查通道索引有效性和可见性
-    if (ch >= channelLines.length || ch >= props.channelsCount || !props.channelVisibility[ch]) {
+    if (ch >= channelLines.length || ch >= props.channelsCount) {
       continue;
     }
     
@@ -204,20 +224,17 @@ function updateSpectrumData() {
     const channelOffset = calculateChannelOffset(ch);
     const spectrum = freqData.spectrum;
     
-    // 更新线条颜色（如果选中则加强显示）
-    const isSelected = props.selectedChannels.has(ch);
-    const baseColor = channelColors[ch % channelColors.length];
-    
-    if (isSelected) {
-      line.color = new ColorRGBA(
-        Math.min(baseColor.r * 1.2, 1.0),
-        Math.min(baseColor.g * 1.2, 1.0), 
-        Math.min(baseColor.b * 1.2, 1.0),
-        1.0
-      );
-    } else {
-      line.color = baseColor;
+    // 处理可见性
+    if (!props.channelVisibility[ch]) {
+      // 不可见通道：设置为基线
+      for (let i = 0; i < FREQ_BINS; i++) {
+        line.setY(i, channelOffset);
+      }
+      continue;
     }
+    
+    // 更新线条颜色（选中状态）
+    updateLineColor(line, ch);
     
     // 更新频谱数据点
     const dataLength = Math.min(spectrum.length, FREQ_BINS);
@@ -234,25 +251,50 @@ function updateSpectrumData() {
       line.setY(i, y);
     }
   }
+}
+
+// ✅ 颜色更新优化
+function updateLineColor(line: WebglLine, channelIndex: number) {
+  const isSelected = props.selectedChannels.has(channelIndex);
+  const baseColor = channelColors[channelIndex % channelColors.length];
   
-  // 处理不可见的通道
-  for (let ch = 0; ch < channelLines.length; ch++) {
-    if (!props.channelVisibility[ch]) {
-      const line = channelLines[ch];
-      const channelOffset = calculateChannelOffset(ch);
-      
-      for (let i = 0; i < FREQ_BINS; i++) {
-        line.setY(i, channelOffset);
-      }
-    }
+  if (isSelected) {
+    // 选中状态：增强亮度
+    line.color = new ColorRGBA(
+      Math.min(baseColor.r * 1.3, 1.0),
+      Math.min(baseColor.g * 1.3, 1.0),
+      Math.min(baseColor.b * 1.3, 1.0),
+      1.0
+    );
+  } else {
+    // 普通状态
+    line.color = baseColor;
+  }
+}
+
+// ✅ 性能统计
+function updatePerformanceStats(startTime: number, endTime: number) {
+  const now = Date.now();
+  frameCount++;
+  
+  // 计算延迟
+  const latency = endTime - startTime;
+  latencyHistory.push(latency);
+  if (latencyHistory.length > MAX_LATENCY_SAMPLES) {
+    latencyHistory.shift();
   }
   
-  // 更新WebGL绘图
-  try {
-    wglp.update();
-  } catch (error) {
-    console.error('WebGL更新错误:', error);
-    webglStatus.value = '更新错误';
+  // 每秒更新一次统计
+  if (now - lastFrameTime >= 1000) {
+    updateRate.value = frameCount;
+    avgLatency.value = latencyHistory.reduce((a, b) => a + b, 0) / latencyHistory.length;
+    
+    emit('update-frequency-rate', updateRate.value);
+    
+    console.log(`📊 频域统计: ${updateRate.value}Hz, 平均延迟: ${avgLatency.value.toFixed(1)}ms`);
+    
+    frameCount = 0;
+    lastFrameTime = now;
   }
 }
 
@@ -272,25 +314,15 @@ function clearSpectrum() {
   wglp.update();
 }
 
-// 监听器
-watch(() => props.spectrumData, () => {
-  updateSpectrumData();
-}, { deep: true });
+// 事件处理
+function handleCanvasClick() {
+  showDebugInfo.value = !showDebugInfo.value;
+}
 
-watch(() => props.channelsCount, () => {
-  console.log(`📊 通道数变化: ${props.channelsCount}`);
-  if (wglp && props.channelsCount > 0) {
-    initChannelLines();
-  }
-}, { immediate: false });
-
-watch(() => props.channelVisibility, () => {
-  updateSpectrumData();
-}, { deep: true });
-
-watch(() => props.selectedChannels, () => {
-  updateSpectrumData();
-}, { deep: true });
+// ✅ 简化的公共方法
+function initCanvas() {
+  initWebGLPlot();
+}
 
 // 窗口大小变化处理
 function handleResize() {
@@ -306,31 +338,56 @@ function handleResize() {
   }
 }
 
-// ✅ 修复生命周期问题
+// 监听器
+watch(() => props.channelsCount, () => {
+  console.log(`📊 频域通道数变化: ${props.channelsCount}`);
+  if (wglp && props.channelsCount > 0) {
+    initChannelLines();
+  }
+}, { immediate: true });
+
+watch(() => props.channelVisibility, () => {
+  // 可见性变化时无需重新渲染，下次数据到达时自然处理
+}, { deep: true });
+
+watch(() => props.selectedChannels, () => {
+  // 选中状态变化时无需重新渲染，下次数据到达时自然处理
+}, { deep: true });
+
+// ✅ 生命周期：事件驱动模式
 onMounted(async () => {
   await nextTick();
   initWebGLPlot();
+  
+  // ✅ 关键：监听后端frame-update事件，专注频域数据
+  const unlistenFrameUpdate = await listen('frame-update', handleFrameUpdate);
+  
+  // 保存取消监听的函数
+  onUnmounted(() => {
+    unlistenFrameUpdate();
+  });
+  
   window.addEventListener('resize', handleResize);
+  console.log('🎧 频域事件监听器已设置，等待后端频域数据...');
 });
 
 onUnmounted(() => {
-  // ✅ 修复：清理WebGL资源
+  // 清理WebGL资源
   if (wglp) {
-    wglp.removeAllLines();  // 使用正确的方法
+    wglp.removeAllLines();
     channelLines.length = 0;
     wglp = null;
   }
   
   window.removeEventListener('resize', handleResize);
-  console.log('🧹 WebGL频域画布已清理');
+  console.log('🧹 事件驱动频域WebGL画布已清理');
 });
 
-// 暴露方法给父组件
+// ✅ 大幅简化的暴露方法
 defineExpose({
-  updateSpectrumData,
-  clearSpectrum,
-  initWebGLPlot,
-  initChannelLines
+  initCanvas,
+  clearSpectrum
+  // ✅ 移除了不再需要的方法
 });
 </script>
 
@@ -368,6 +425,7 @@ defineExpose({
     inset 0 2px 4px rgba(0, 0, 0, 0.1),
     0 0 20px rgba(102, 126, 234, 0.1);
   transition: box-shadow 0.3s ease;
+  cursor: pointer;
 }
 
 .spectrum-canvas:hover {
@@ -402,6 +460,8 @@ defineExpose({
   background: rgba(255, 255, 255, 0.8);
   border-radius: 6px;
   font-size: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.3rem;
 }
 
 .update-rate {
@@ -420,6 +480,16 @@ defineExpose({
   padding: 0.2rem 0.5rem;
   border-radius: 12px;
   border: 1px solid rgba(0, 123, 255, 0.2);
+}
+
+/* ✅ 新增：延迟信息 */
+.latency-info {
+  color: #6f42c1;
+  font-weight: 600;
+  background: rgba(111, 66, 193, 0.1);
+  padding: 0.2rem 0.5rem;
+  border-radius: 12px;
+  border: 1px solid rgba(111, 66, 193, 0.2);
 }
 
 /* WebGL加速指示动画 */
@@ -451,7 +521,14 @@ defineExpose({
   
   .frequency-status {
     flex-direction: column;
-    gap: 0.3rem;
+    align-items: stretch;
+    gap: 0.2rem;
+  }
+  
+  .update-rate,
+  .webgl-status,
+  .latency-info {
+    text-align: center;
   }
 }
 </style>

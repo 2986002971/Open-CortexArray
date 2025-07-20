@@ -58,7 +58,6 @@ const selectedStream = ref<string>("");
 const recordingFilename = ref("");
 
 // 数据状态
-const spectrumData = ref<FreqData[]>([]);
 let SAMPLE_RATE = 250;
 let CHANNELS_COUNT = 0;
 
@@ -117,12 +116,12 @@ async function connectToSelectedStream() {
       // 初始化通道可见性
       channelVisibility.value = Array(CHANNELS_COUNT).fill(true);
       
-      // 初始化画布组件
-      timeDomainCanvasRef.value?.initDataBuffer();
+      // ✅ 事件驱动模式：只需初始化画布
       timeDomainCanvasRef.value?.initCanvas();
+      frequencyDomainCanvasRef.value?.initCanvas();
       
-      // 启动渲染循环
-      timeDomainCanvasRef.value?.startRenderLoop();
+      console.log(`🔌 已连接到流: ${info.name}, ${CHANNELS_COUNT}通道, ${SAMPLE_RATE}Hz`);
+      console.log('📡 等待后端数据事件...');
     }
   } catch (error) {
     console.error('Failed to connect to stream:', error);
@@ -134,10 +133,11 @@ async function disconnectStream() {
     await invoke('disconnect_stream');
     isConnected.value = false;
     
-    // 停止渲染循环
-    timeDomainCanvasRef.value?.stopRenderLoop();
+    // ✅ 事件驱动模式：无需手动停止渲染循环
+    // 组件会自动停止监听事件
     
     streamInfo.value = null;
+    console.log('🔌 已断开连接');
   } catch (error) {
     console.error('Failed to disconnect stream:', error);
   }
@@ -199,10 +199,10 @@ function updateFrequencyRate(rate: number) {
 }
 
 function updateWaveFront(position: number) {
-  waveFrontX.value = position;
+  waveFrontX.value = position * 100; // 转换为百分比
 }
 
-// 数据处理
+// ✅ 简化的数据处理函数
 function processFramePayload(payload: FramePayload) {
   const now = Date.now();
   
@@ -213,29 +213,31 @@ function processFramePayload(payload: FramePayload) {
   }
   lastBackendDataTime = now;
   
-  // 处理时域数据
+  // 只处理通道数和采样率变化
   const batch = payload.time_domain;
-  SAMPLE_RATE = batch.sample_rate;
-  CHANNELS_COUNT = batch.channels_count;
+  if (SAMPLE_RATE !== batch.sample_rate) {
+    console.log(`📊 采样率变化: ${SAMPLE_RATE} → ${batch.sample_rate}`);
+    SAMPLE_RATE = batch.sample_rate;
+  }
   
-  // 如果通道数改变，重新初始化
-  if (channelVisibility.value.length !== CHANNELS_COUNT) {
+  if (CHANNELS_COUNT !== batch.channels_count) {
+    console.log(`📊 通道数变化: ${CHANNELS_COUNT} → ${batch.channels_count}`);
+    CHANNELS_COUNT = batch.channels_count;
     channelVisibility.value = Array(CHANNELS_COUNT).fill(true);
-    timeDomainCanvasRef.value?.initDataBuffer();
   }
   
-  // 将样本添加到时域画布
-  timeDomainCanvasRef.value?.addBatchData(batch.samples);
-  
-  // 处理频域数据
-  if (payload.frequency_domain && payload.frequency_domain.length > 0) {
-    spectrumData.value = payload.frequency_domain;
-  }
+  // ✅ 现在两个组件都直接监听事件
+  // ❌ 删除时域调用：timeDomainCanvasRef.value?.addBatchData(batch.samples);
+  // ❌ 删除频域数据传递：spectrumData.value = payload.frequency_domain;
 }
 
 // 生命周期
 onMounted(async () => {
-  // 监听合并的帧数据
+  // ✅ 主线程继续监听frame-update事件，但用途改变了
+  // 现在主要用于：
+  // 1. 性能统计
+  // 2. 频域数据更新
+  // 3. 通道数变化检测
   const unlisten = await listen('frame-update', (event) => {
     const payload = event.payload as FramePayload;
     processFramePayload(payload);
@@ -244,6 +246,8 @@ onMounted(async () => {
   onUnmounted(() => {
     unlisten();
   });
+  
+  console.log('🚀 App.vue已初始化，事件驱动模式启用');
 });
 </script>
 
@@ -251,7 +255,7 @@ onMounted(async () => {
   <div class="eeg-visualizer">
     <!-- 标题栏 -->
     <header class="header">
-      <h1>Open CortexArray - EEG可视化系统 V2.5</h1>
+      <h1>Open CortexArray - EEG可视化系统 V2.5 (事件驱动)</h1>
       <div class="status-info">
         <span v-if="streamInfo" class="stream-info">
           {{ streamInfo.name }} ({{ streamInfo.stream_type }}) | {{ streamInfo.channels_count }}通道 | {{ streamInfo.sample_rate }}Hz | {{ streamInfo.source_id }}
@@ -337,7 +341,7 @@ onMounted(async () => {
       <!-- 通道操作提示 -->
       <div v-if="isConnected && CHANNELS_COUNT > 0" class="channel-help">
         <span class="control-label">通道操作:</span>
-        <span class="help-text">点击左侧标签切换显示 | Ctrl+点击多选高亮</span>
+        <span class="help-text">点击左侧标签切换显示 | Ctrl+点击多选高亮 | 点击时域画布查看性能</span>
       </div>
     </div>
 
@@ -347,6 +351,14 @@ onMounted(async () => {
       <div v-if="!isConnected" class="connection-prompt">
         <h3>请先连接到LSL流</h3>
         <p>点击"发现LSL流"按钮开始搜索可用的数据流，然后选择并连接。</p>
+        <div class="architecture-info">
+          <h4>🚀 新特性：事件驱动渲染</h4>
+          <ul>
+            <li>✅ 移除前端缓冲区，直接响应后端数据</li>
+            <li>✅ WebGL高性能渲染，预期30Hz稳定帧率</li>
+            <li>✅ 零延迟波前更新</li>
+          </ul>
+        </div>
       </div>
 
       <!-- 双画布布局 -->
@@ -374,7 +386,6 @@ onMounted(async () => {
           :sample-rate="SAMPLE_RATE"
           :channel-visibility="channelVisibility"
           :selected-channels="selectedChannels"
-          :spectrum-data="spectrumData"
           :max-freq="60"
           @update-frequency-rate="updateFrequencyRate"
         />
@@ -384,10 +395,10 @@ onMounted(async () => {
     <!-- 信息面板 -->
     <div class="info-panel">
       <div class="info-item">
-        <strong>渲染模式:</strong> 组件化双画布实时渲染
+        <strong>渲染模式:</strong> 事件驱动WebGL渲染 🚀
       </div>
       <div class="info-item">
-        <strong>波前位置:</strong> {{ Math.round(waveFrontX) }}px
+        <strong>波前位置:</strong> {{ waveFrontX.toFixed(1) }}%
       </div>
       <div class="info-item">
         <strong>频域更新:</strong> {{ Math.round(frontendRenderRate) }}Hz
@@ -396,14 +407,14 @@ onMounted(async () => {
         <strong>后端数据率:</strong> {{ Math.round(backendDataRate) }}Hz
       </div>
       <div class="info-item">
-        <strong>时域渲染率:</strong> {{ Math.round(timedomainRenderRate) }}帧/秒
+        <strong>时域渲染率:</strong> {{ Math.round(timedomainRenderRate) }}Hz
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 保留原有样式，但简化布局相关代码 */
+/* 基础样式保持不变... */
 .eeg-visualizer {
   font-family: 'Inter', 'Arial', sans-serif;
   max-width: 100vw;
@@ -587,89 +598,64 @@ onMounted(async () => {
   min-height: 500px;
 }
 
-/* 双画布布局 */
+/* ✅ 新增：架构信息展示 */
+.connection-prompt {
+  text-align: center;
+  padding: 3rem 0;
+}
+
+.architecture-info {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  border-radius: 12px;
+  border-left: 4px solid #667eea;
+}
+
+.architecture-info h4 {
+  color: #495057;
+  margin-bottom: 1rem;
+}
+
+.architecture-info ul {
+  text-align: left;
+  display: inline-block;
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.architecture-info li {
+  margin: 0.5rem 0;
+  color: #666;
+}
+
 .dual-canvas-layout {
   display: flex;
   gap: 2rem;
   height: 500px;
 }
 
-.time-domain-panel {
-  flex: 1; /* 占据剩余空间，约66% */
-  display: flex;
-  flex-direction: column;
-  position: relative;
-}
-
-.frequency-panel {
-  flex: 0 0 33%; /* 固定33%宽度 */
-  display: flex;
-  flex-direction: column;
-  background: #f8f9fa;
+.info-panel {
+  background: rgba(255, 255, 255, 0.9);
+  padding: 1rem 2rem;
+  margin: 0 2rem 2rem;
   border-radius: 8px;
-  padding: 1rem;
-  border: 2px solid #e9ecef;
-}
-
-.frequency-panel h3,
-.time-domain-panel h3 {
-  margin: 0 0 1rem 0;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #495057;
-  text-align: center;
-}
-
-/* 时域画布样式 */
-.eeg-canvas {
-  flex: 1;
-  border: 2px solid #e0e0e0;
-  border-radius: 8px;
-  background: #fafafa;
-  display: block;
-  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.1);
-  cursor: default;
-}
-
-/* 频域画布样式 */
-.spectrum-canvas {
-  flex: 1;
-  border: 2px solid #dee2e6;
-  border-radius: 6px;
-  background: #ffffff;
-  display: block;
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.05);
-}
-
-/* 频域图例 */
-.frequency-legend {
   display: flex;
   justify-content: space-between;
-  margin-top: 0.5rem;
-  padding: 0 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
 }
 
-.freq-range {
-  font-size: 0.8rem;
-  color: #6c757d;
-  font-weight: 500;
+.info-item {
+  font-size: 0.9rem;
+  color: #666;
 }
 
-/* 波前指示器调整 */
-.wave-front-indicator {
-  position: absolute;
-  bottom: 0;
-  width: 2px;
-  height: 20px;
-  background: linear-gradient(to bottom, #ff6b6b, transparent);
-  border-radius: 1px;
-  box-shadow: 0 0 4px rgba(255, 107, 107, 0.5);
-  animation: pulse-glow 1s ease-in-out infinite alternate;
-}
-
-@keyframes pulse-glow {
-  from { box-shadow: 0 0 4px rgba(255, 107, 107, 0.5); }
-  to { box-shadow: 0 0 8px rgba(255, 107, 107, 0.8); }
+.info-item strong {
+  color: #333;
+  font-weight: 600;
 }
 
 /* 响应式设计 */
@@ -678,16 +664,6 @@ onMounted(async () => {
     flex-direction: column;
     height: auto;
     gap: 1.5rem;
-  }
-  
-  .time-domain-panel {
-    flex: none;
-    height: 400px;
-  }
-  
-  .frequency-panel {
-    flex: none;
-    height: 300px;
   }
 }
 
@@ -706,10 +682,6 @@ onMounted(async () => {
   .visualization-area {
     margin: 0 1rem 1rem;
     padding: 1rem;
-  }
-  
-  .dual-canvas-layout {
-    gap: 1rem;
   }
   
   .info-panel {
