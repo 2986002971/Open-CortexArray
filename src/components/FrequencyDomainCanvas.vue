@@ -49,11 +49,6 @@ interface FreqData {
   frequency_bins: number[];
 }
 
-interface FramePayload {
-  time_domain: any;
-  frequency_domain: FreqData[];
-}
-
 // Canvas相关
 const spectrumCanvasRef = ref<HTMLCanvasElement | null>(null);
 let wglp: WebglPlot | null = null;

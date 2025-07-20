@@ -6,8 +6,6 @@
       ref="canvasRef" 
       class="eeg-canvas"
       :style="{ width: '100%', height: '400px' }"
-      @click="handleCanvasClick"
-      @mousemove="handleCanvasMouseMove"
       @mouseleave="handleCanvasMouseLeave"
     ></canvas>
     
@@ -356,15 +354,6 @@ function handleChannelHover(channelIndex: number) {
 
 function handleChannelLeave() {
   emit('hover-channel', -1);
-}
-
-function handleCanvasClick(event: MouseEvent) {
-  // 点击切换调试信息显示
-  showDebugInfo.value = !showDebugInfo.value;
-}
-
-function handleCanvasMouseMove(event: MouseEvent) {
-  // 鼠标移动事件
 }
 
 function handleCanvasMouseLeave() {
