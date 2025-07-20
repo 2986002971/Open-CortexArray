@@ -454,10 +454,13 @@ defineExpose({
 
 <style scoped>
 .time-domain-panel {
-  flex: 1;
+  /* ✅ 确保参与flex布局 */
+  height: 100%;
+  width: 100%; /* ✅ 明确宽度 */
   display: flex;
   flex-direction: column;
   position: relative;
+  /* ✅ 移除任何背景或边框，确保与频域一致 */
 }
 
 .time-domain-panel h3 {
@@ -470,10 +473,16 @@ defineExpose({
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .eeg-canvas {
   flex: 1;
+  width: 100%; /* ✅ 确保Canvas占满容器宽度 */
   border: 2px solid #dee2e6;
   border-radius: 6px;
   background: #000000;
@@ -485,10 +494,33 @@ defineExpose({
   cursor: pointer;
 }
 
-.eeg-canvas:hover {
-  box-shadow: 
-    inset 0 2px 4px rgba(0, 0, 0, 0.1),
-    0 0 25px rgba(102, 126, 234, 0.2);
+/* 通道标签叠加层需要绝对定位，但要确保在正确的容器内 */
+.channel-labels-overlay {
+  position: absolute;
+  left: 0;
+  top: 3rem;
+  bottom: 0;
+  width: 80px;
+  pointer-events: none;
+  /* ✅ 确保z-index正确 */
+  z-index: 10;
+}
+
+/* 性能统计面板调整位置避免遮挡 */
+.performance-stats {
+  position: absolute;
+  top: 3rem; /* ✅ 调整位置避开标题 */
+  right: 1rem;
+  background: rgba(0, 0, 0, 0.8);
+  color: #00ff00;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.7rem;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
 /* 通道标签样式保持不变 */
@@ -558,23 +590,6 @@ defineExpose({
   box-shadow: 0 0 6px rgba(255, 107, 107, 0.8);
   animation: webgl-pulse 2s ease-in-out infinite alternate;
   z-index: 5;
-}
-
-/* ✅ 新增：性能统计面板 */
-.performance-stats {
-  position: absolute;
-  top: 1rem;
-  right: 1rem;
-  background: rgba(0, 0, 0, 0.8);
-  color: #00ff00;
-  padding: 0.5rem;
-  border-radius: 4px;
-  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-  font-size: 0.7rem;
-  z-index: 15;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
 }
 
 @keyframes webgl-pulse {

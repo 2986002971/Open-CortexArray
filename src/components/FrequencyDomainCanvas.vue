@@ -5,18 +5,14 @@
     <canvas 
       ref="spectrumCanvasRef" 
       class="spectrum-canvas"
-      :style="{ width: '100%', height: '400px' }"
       @click="handleCanvasClick"
     ></canvas>
-    <div class="frequency-legend">
-      <div class="freq-range">1Hz</div>
-      <div class="freq-range">{{ Math.round(maxFreq / 2) }}Hz</div>
-      <div class="freq-range">{{ maxFreq }}Hz</div>
-    </div>
-    <div class="frequency-status">
-      <span class="update-rate">{{ Math.round(updateRate) }}Hz 更新</span>
-      <span class="webgl-status">WebGL: {{ webglStatus }}</span>
-      <span v-if="showDebugInfo" class="latency-info">延迟: {{ avgLatency.toFixed(1) }}ms</span>
+    
+    <!-- ✅ 性能统计：只在调试时显示，位置绝对定位不占用布局空间 -->
+    <div class="performance-stats" v-if="showDebugInfo">
+      <span>{{ Math.round(updateRate) }}Hz</span>
+      <span>{{ avgLatency.toFixed(1) }}ms</span>
+      <span>WebGL: {{ webglStatus }}</span>
     </div>
   </div>
 </template>
@@ -73,6 +69,7 @@ const FREQ_BINS = 50;
 const MAX_AMPLITUDE = 100;
 
 // ✅ 性能监控：事件驱动模式
+//TODO: 升级成多线程离屏画布
 let frameCount = 0;
 let lastFrameTime = 0;
 const avgLatency = ref(0);
@@ -387,20 +384,29 @@ onUnmounted(() => {
 defineExpose({
   initCanvas,
   clearSpectrum
-  // ✅ 移除了不再需要的方法
 });
 </script>
 
 <style scoped>
 .frequency-panel {
-  flex: 0 0 33%;
+  /* ✅ 移除圆角矩形样式，与时域保持一致 */
+  height: 100%;
+  width: 100%;
   display: flex;
   flex-direction: column;
+  position: relative;
+  
+  /* ❌ 移除这些样式：
   background: #f8f9fa;
   border-radius: 8px;
   padding: 1rem;
   border: 2px solid #e9ecef;
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  */
+  
+  /* ✅ 保留基本布局属性 */
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .frequency-panel h3 {
@@ -413,10 +419,16 @@ defineExpose({
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .spectrum-canvas {
   flex: 1;
+  width: 100%;
   border: 2px solid #dee2e6;
   border-radius: 6px;
   background: #000000;
@@ -426,6 +438,7 @@ defineExpose({
     0 0 20px rgba(102, 126, 234, 0.1);
   transition: box-shadow 0.3s ease;
   cursor: pointer;
+  box-sizing: border-box;
 }
 
 .spectrum-canvas:hover {
@@ -434,65 +447,25 @@ defineExpose({
     0 0 25px rgba(102, 126, 234, 0.2);
 }
 
-.frequency-legend {
+/* 性能统计：绝对定位，不影响布局 */
+.performance-stats {
+  position: absolute;
+  top: 3rem;
+  right: 1rem;
+  background: rgba(0, 0, 0, 0.8);
+  color: #00ff00;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.7rem;
+  z-index: 15;
   display: flex;
-  justify-content: space-between;
-  margin-top: 0.5rem;
-  padding: 0 0.5rem;
+  flex-direction: column;
+  gap: 0.2rem;
+  pointer-events: none;
 }
 
-.freq-range {
-  font-size: 0.8rem;
-  color: #6c757d;
-  font-weight: 500;
-  background: rgba(108, 117, 125, 0.1);
-  padding: 0.2rem 0.4rem;
-  border-radius: 8px;
-  border: 1px solid rgba(108, 117, 125, 0.2);
-}
-
-.frequency-status {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 0.5rem;
-  padding: 0.3rem;
-  background: rgba(255, 255, 255, 0.8);
-  border-radius: 6px;
-  font-size: 0.75rem;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-}
-
-.update-rate {
-  color: #28a745;
-  font-weight: 600;
-  background: rgba(40, 167, 69, 0.1);
-  padding: 0.2rem 0.5rem;
-  border-radius: 12px;
-  border: 1px solid rgba(40, 167, 69, 0.2);
-}
-
-.webgl-status {
-  color: #007bff;
-  font-weight: 600;
-  background: rgba(0, 123, 255, 0.1);
-  padding: 0.2rem 0.5rem;
-  border-radius: 12px;
-  border: 1px solid rgba(0, 123, 255, 0.2);
-}
-
-/* ✅ 新增：延迟信息 */
-.latency-info {
-  color: #6f42c1;
-  font-weight: 600;
-  background: rgba(111, 66, 193, 0.1);
-  padding: 0.2rem 0.5rem;
-  border-radius: 12px;
-  border: 1px solid rgba(111, 66, 193, 0.2);
-}
-
-/* WebGL加速指示动画 */
+/* WebGL动画保持不变 */
 @keyframes webgl-pulse {
   0%, 100% { 
     box-shadow: 0 0 20px rgba(102, 126, 234, 0.1); 
@@ -509,26 +482,15 @@ defineExpose({
 /* 响应式调整 */
 @media (max-width: 1200px) {
   .frequency-panel {
-    flex: 0 0 40%;
+    height: auto;
+    min-height: 400px;
   }
 }
 
 @media (max-width: 768px) {
   .frequency-panel {
-    flex: 1 1 100%;
-    margin-top: 1rem;
-  }
-  
-  .frequency-status {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.2rem;
-  }
-  
-  .update-rate,
-  .webgl-status,
-  .latency-info {
-    text-align: center;
+    height: auto;
+    min-height: 350px;
   }
 }
 </style>

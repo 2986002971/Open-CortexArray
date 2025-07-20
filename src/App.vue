@@ -633,30 +633,31 @@ onMounted(async () => {
   display: flex;
   gap: 2rem;
   height: 500px;
+  align-items: stretch; /* ✅ 确保子元素完全拉伸 */
+  /* ✅ 确保是真正的flex布局 */
+  width: 100%;
 }
 
-.info-panel {
-  background: rgba(255, 255, 255, 0.9);
-  padding: 1rem 2rem;
-  margin: 0 2rem 2rem;
-  border-radius: 8px;
+/* ✅ 修正：确保两个组件都参与flex布局 */
+.dual-canvas-layout > * {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 1rem;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  flex-direction: column;
+  /* ✅ 移除任何可能的绝对定位 */
+  position: relative;
 }
 
-.info-item {
-  font-size: 0.9rem;
-  color: #666;
+/* 时域组件占用更大空间 */
+.dual-canvas-layout > :first-child {
+  flex: 2; /* 时域占2/3 */
+  min-width: 0; /* ✅ 防止flex收缩问题 */
 }
 
-.info-item strong {
-  color: #333;
-  font-weight: 600;
+/* 频域组件占用较小空间但高度对齐 */
+.dual-canvas-layout > :last-child {
+  flex: 1; /* 频域占1/3 */
+  min-width: 0; /* ✅ 防止flex收缩问题 */
 }
+
 
 /* 响应式设计 */
 @media (max-width: 1200px) {
@@ -664,6 +665,12 @@ onMounted(async () => {
     flex-direction: column;
     height: auto;
     gap: 1.5rem;
+  }
+  
+  /* 在垂直布局时重置flex */
+  .dual-canvas-layout > * {
+    flex: none;
+    min-width: auto;
   }
 }
 
