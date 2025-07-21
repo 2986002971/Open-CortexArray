@@ -391,13 +391,12 @@ defineExpose({
   flex-direction: column;
   position: relative;
   
-  /* ❌ 移除这些样式：
   background: #f8f9fa;
   border-radius: 8px;
   padding: 1rem;
   border: 2px solid #e9ecef;
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-  */
+ 
   
   /* ✅ 保留基本布局属性 */
   box-sizing: border-box;

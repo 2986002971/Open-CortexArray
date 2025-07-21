@@ -443,13 +443,20 @@ defineExpose({
 
 <style scoped>
 .time-domain-panel {
-  /* ✅ 确保参与flex布局 */
   height: 100%;
-  width: 100%; /* ✅ 明确宽度 */
+  width: 100%;
   display: flex;
   flex-direction: column;
   position: relative;
-  /* ✅ 移除任何背景或边框，确保与频域一致 */
+  
+  /* ✅ 添加与频域相同的圆角矩形样式 */
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 1rem;
+  border: 2px solid #e9ecef;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .time-domain-panel h3 {
@@ -471,7 +478,7 @@ defineExpose({
 
 .eeg-canvas {
   flex: 1;
-  width: 100%; /* ✅ 确保Canvas占满容器宽度 */
+  width: 100%;
   border: 2px solid #dee2e6;
   border-radius: 6px;
   background: #000000;
@@ -481,6 +488,12 @@ defineExpose({
     0 0 20px rgba(102, 126, 234, 0.1);
   transition: box-shadow 0.3s ease;
   cursor: pointer;
+}
+
+.eeg-canvas:hover {
+  box-shadow: 
+    inset 0 2px 4px rgba(0, 0, 0, 0.1),
+    0 0 25px rgba(102, 126, 234, 0.2);
 }
 
 /* 通道标签叠加层需要绝对定位，但要确保在正确的容器内 */
