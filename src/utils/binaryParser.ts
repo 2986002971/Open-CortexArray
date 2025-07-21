@@ -117,7 +117,6 @@ export class BinaryFrameParser {
     if (!header || channelIndex >= header.channels_count) return null;
     
     let offset = 32; // 跳过头部
-    const view = new DataView(buffer);
     
     // 跳转到目标通道
     for (let ch = 0; ch < channelIndex; ch++) {
