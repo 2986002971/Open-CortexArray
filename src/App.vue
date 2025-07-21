@@ -5,20 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import TimeDomainCanvas from "./components/TimeDomainCanvas.vue";
 import FrequencyDomainCanvas from "./components/FrequencyDomainCanvas.vue";
 
-// 类型定义
-interface EegSample {
-  timestamp: number;
-  channels: number[];
-  sample_id: number;
-}
-
-interface EegBatch {
-  samples: EegSample[];
-  batch_id: number;
-  channels_count: number;
-  sample_rate: number;
-}
-
+// ✅ 保留必要的类型定义
 interface StreamInfo {
   name: string;
   stream_type: string;
@@ -38,17 +25,16 @@ interface LslStreamInfo {
 }
 
 interface FramePayload {
-  time_domain: EegBatch;
-  frequency_domain: FreqData[];
+  time_domain: {
+    samples: any[];
+    batch_id: number;
+    channels_count: number;
+    sample_rate: number;
+  };
+  frequency_domain: any[];
 }
 
-interface FreqData {
-  channel_index: number;
-  spectrum: number[];
-  frequency_bins: number[];
-}
-
-// 响应式状态
+// ✅ 连接和录制状态（核心职责）
 const isConnected = ref(false);
 const isRecording = ref(false);
 const isDiscovering = ref(false);
@@ -57,28 +43,28 @@ const availableStreams = ref<LslStreamInfo[]>([]);
 const selectedStream = ref<string>("");
 const recordingFilename = ref("");
 
-// 数据状态
+// ✅ UI交互状态（App需要管理）
+const channelVisibility = ref<boolean[]>([]);
+const hoveredChannel = ref<number>(-1);
+const selectedChannels = ref<Set<number>>(new Set());
+
+// ✅ 动态获取的流参数
 let SAMPLE_RATE = 250;
 let CHANNELS_COUNT = 0;
+
+// ✅ 性能监控（App层面的统计）
+const backendDataRate = ref(0);
+const timedomainRenderRate = ref(0);
+const frequencyRenderRate = ref(0);
+const waveFrontPosition = ref(0);
+
+let lastBackendDataTime = 0;
 
 // 组件引用
 const timeDomainCanvasRef = ref<InstanceType<typeof TimeDomainCanvas> | null>(null);
 const frequencyDomainCanvasRef = ref<InstanceType<typeof FrequencyDomainCanvas> | null>(null);
 
-// 通道控制状态
-const channelVisibility = ref<boolean[]>([]);
-const hoveredChannel = ref<number>(-1);
-const selectedChannels = ref<Set<number>>(new Set());
-
-// 性能监控
-const backendDataRate = ref(0);
-const frontendRenderRate = ref(0);
-const timedomainRenderRate = ref(0);
-const waveFrontX = ref(80); // 默认波前位置
-
-let lastBackendDataTime = 0;
-
-// 控制函数
+// ✅ LSL连接控制函数（保留）
 async function discoverStreams() {
   try {
     isDiscovering.value = true;
@@ -105,7 +91,7 @@ async function connectToSelectedStream() {
     await invoke('connect_to_stream', { streamName: selectedStream.value });
     isConnected.value = true;
     
-    // 获取流信息
+    // ✅ 获取流信息并更新全局状态
     const info = await invoke('get_stream_info') as StreamInfo | null;
     streamInfo.value = info;
     
@@ -113,15 +99,11 @@ async function connectToSelectedStream() {
       CHANNELS_COUNT = info.channels_count;
       SAMPLE_RATE = info.sample_rate;
       
-      // 初始化通道可见性
+      // ✅ 初始化通道可见性
       channelVisibility.value = Array(CHANNELS_COUNT).fill(true);
       
-      // ✅ 事件驱动模式：只需初始化画布
-      timeDomainCanvasRef.value?.initCanvas();
-      frequencyDomainCanvasRef.value?.initCanvas();
-      
       console.log(`🔌 已连接到流: ${info.name}, ${CHANNELS_COUNT}通道, ${SAMPLE_RATE}Hz`);
-      console.log('📡 等待后端数据事件...');
+      console.log('📡 画布将独立监听二进制/频域事件');
     }
   } catch (error) {
     console.error('Failed to connect to stream:', error);
@@ -132,17 +114,20 @@ async function disconnectStream() {
   try {
     await invoke('disconnect_stream');
     isConnected.value = false;
-    
-    // ✅ 事件驱动模式：无需手动停止渲染循环
-    // 组件会自动停止监听事件
-    
     streamInfo.value = null;
+    
+    // ✅ 重置状态
+    CHANNELS_COUNT = 0;
+    SAMPLE_RATE = 250;
+    channelVisibility.value = [];
+    
     console.log('🔌 已断开连接');
   } catch (error) {
     console.error('Failed to disconnect stream:', error);
   }
 }
 
+// ✅ 录制控制函数（保留）
 async function startRecording() {
   if (!recordingFilename.value) {
     recordingFilename.value = `eeg_recording_${new Date().toISOString().replace(/[:.]/g, '-')}.edf`;
@@ -165,7 +150,7 @@ async function stopRecording() {
   }
 }
 
-// 通道控制事件处理
+// ✅ UI交互控制函数（保留）
 function toggleChannel(channelIndex: number) {
   channelVisibility.value[channelIndex] = !channelVisibility.value[channelIndex];
 }
@@ -177,91 +162,89 @@ function selectChannel(channelIndex: number, isMultiSelect: boolean) {
     } else {
       selectedChannels.value.add(channelIndex);
     }
-    selectedChannels.value = new Set(selectedChannels.value);
   } else {
     selectedChannels.value.clear();
     selectedChannels.value.add(channelIndex);
-    selectedChannels.value = new Set(selectedChannels.value);
   }
+  selectedChannels.value = new Set(selectedChannels.value);
 }
 
 function hoverChannel(channelIndex: number) {
   hoveredChannel.value = channelIndex;
 }
 
-// 性能监控事件处理
+// ✅ 性能监控回调（来自画布组件）
 function updateTimedomainRenderRate(rate: number) {
   timedomainRenderRate.value = rate;
 }
 
 function updateFrequencyRate(rate: number) {
-  frontendRenderRate.value = rate;
+  frequencyRenderRate.value = rate;
 }
 
 function updateWaveFront(position: number) {
-  waveFrontX.value = position * 100; // 转换为百分比
+  waveFrontPosition.value = position * 100;
 }
 
-// ✅ 简化的数据处理函数
-function processFramePayload(payload: FramePayload) {
+// ✅ 简化的数据监控（仅用于性能统计）
+function monitorBackendData(payload: FramePayload) {
   const now = Date.now();
   
-  // 跟踪后端数据更新率
+  // 跟踪后端数据率
   if (lastBackendDataTime > 0) {
     const delta = now - lastBackendDataTime;
     backendDataRate.value = 1000 / delta;
   }
   lastBackendDataTime = now;
   
-  // 只处理通道数和采样率变化
+  // ✅ 检测流参数变化（可能影响UI）
   const batch = payload.time_domain;
   if (SAMPLE_RATE !== batch.sample_rate) {
     console.log(`📊 采样率变化: ${SAMPLE_RATE} → ${batch.sample_rate}`);
     SAMPLE_RATE = batch.sample_rate;
+    if (streamInfo.value) {
+      streamInfo.value.sample_rate = batch.sample_rate;
+    }
   }
   
   if (CHANNELS_COUNT !== batch.channels_count) {
     console.log(`📊 通道数变化: ${CHANNELS_COUNT} → ${batch.channels_count}`);
     CHANNELS_COUNT = batch.channels_count;
+    if (streamInfo.value) {
+      streamInfo.value.channels_count = batch.channels_count;
+    }
+    // 重新初始化通道可见性
     channelVisibility.value = Array(CHANNELS_COUNT).fill(true);
   }
-  
-  // ✅ 现在两个组件都直接监听事件
-  // ❌ 删除时域调用：timeDomainCanvasRef.value?.addBatchData(batch.samples);
-  // ❌ 删除频域数据传递：spectrumData.value = payload.frequency_domain;
 }
 
-// 生命周期
+// ✅ 生命周期（保持监听但职责简化）
 onMounted(async () => {
-  // ✅ 主线程继续监听frame-update事件，但用途改变了
-  // 现在主要用于：
+  // ✅ App层面监听frame-update主要用于：
   // 1. 性能统计
-  // 2. 频域数据更新
-  // 3. 通道数变化检测
+  // 2. 流参数变化检测
+  // 3. 整体状态监控
   const unlisten = await listen('frame-update', (event) => {
     const payload = event.payload as FramePayload;
-    processFramePayload(payload);
+    monitorBackendData(payload);
   });
   
   onUnmounted(() => {
     unlisten();
   });
   
-  console.log('🚀 App.vue已初始化，事件驱动模式启用');
+  console.log('🚀 App.vue已初始化 - 混合架构：连接管理 + 画布独立监听');
 });
 </script>
 
 <template>
   <div class="eeg-visualizer">
-    <!-- 标题栏 -->
+    <!-- ✅ 标题栏保持不变 -->
     <header class="header">
-      <h1>Open CortexArray - EEG可视化系统 V2.5 (事件驱动)</h1>
+      <h1>Open CortexArray - EEG可视化系统 V2.5 (混合架构)</h1>
       <div class="status-info">
         <span v-if="streamInfo" class="stream-info">
-          {{ streamInfo.name }} ({{ streamInfo.stream_type }}) | {{ streamInfo.channels_count }}通道 | {{ streamInfo.sample_rate }}Hz | {{ streamInfo.source_id }}
-        </span>
-        <span v-else-if="availableStreams.length > 0" class="stream-info">
-          发现 {{ availableStreams.length }} 个LSL流
+          {{ streamInfo.name }} | {{ streamInfo.channels_count }}通道 | {{ streamInfo.sample_rate }}Hz
         </span>
         <span :class="['connection-status', isConnected ? 'connected' : 'disconnected']">
           {{ isConnected ? '已连接' : '未连接' }}
@@ -269,7 +252,7 @@ onMounted(async () => {
       </div>
     </header>
 
-    <!-- 控制面板 -->
+    <!-- ✅ 控制面板完全保留 -->
     <div class="control-panel">
       <!-- LSL流发现和连接 -->
       <div class="control-group">
@@ -307,7 +290,7 @@ onMounted(async () => {
         <button 
           @click="disconnectStream" 
           :disabled="!isConnected"
-          class="btn btn-warning"
+          class="btn btn-danger"
         >
           断开连接
         </button>
@@ -341,33 +324,30 @@ onMounted(async () => {
       <!-- 通道操作提示 -->
       <div v-if="isConnected && CHANNELS_COUNT > 0" class="channel-help">
         <span class="control-label">通道操作:</span>
-        <span class="help-text">点击左侧标签切换显示 | Ctrl+点击多选高亮 | 点击时域画布查看性能</span>
+        <span class="help-text">点击左侧标签切换显示 | Ctrl+点击多选高亮</span>
       </div>
     </div>
 
-    <!-- 主要可视化区域 -->
+    <!-- 可视化区域 -->
     <div class="visualization-area">
-      <!-- 连接提示 -->
       <div v-if="!isConnected" class="connection-prompt">
         <h3>请先连接到LSL流</h3>
-        <p>点击"发现LSL流"按钮开始搜索可用的数据流，然后选择并连接。</p>
         <div class="architecture-info">
-          <h4>🚀 新特性：事件驱动渲染</h4>
+          <h4>🚀 混合架构特性</h4>
           <ul>
-            <li>✅ 移除前端缓冲区，直接响应后端数据</li>
-            <li>✅ WebGL高性能渲染，预期30Hz稳定帧率</li>
-            <li>✅ 零延迟波前更新</li>
+            <li>✅ App.vue：连接管理 + UI交互 + 性能监控</li>
+            <li>✅ TimeDomainCanvas：独立监听 binary-frame-update</li>
+            <li>✅ FrequencyDomainCanvas：独立监听 frequency-update</li>
+            <li>✅ 最佳的职责分离和性能优化</li>
           </ul>
         </div>
       </div>
 
-      <!-- 双画布布局 -->
       <div v-else class="dual-canvas-layout">
-        <!-- 时域波形组件 -->
+        <!-- ✅ 传递streamInfo而不是单独的参数 -->
         <TimeDomainCanvas
           ref="timeDomainCanvasRef"
-          :channels-count="CHANNELS_COUNT"
-          :sample-rate="SAMPLE_RATE"
+          :stream-info="streamInfo"
           :channel-visibility="channelVisibility"
           :selected-channels="selectedChannels"
           :hovered-channel="hoveredChannel"
@@ -379,11 +359,9 @@ onMounted(async () => {
           @update-wave-front="updateWaveFront"
         />
 
-        <!-- 频域分析组件 -->
         <FrequencyDomainCanvas
           ref="frequencyDomainCanvasRef"
-          :channels-count="CHANNELS_COUNT"
-          :sample-rate="SAMPLE_RATE"
+          :stream-info="streamInfo"
           :channel-visibility="channelVisibility"
           :selected-channels="selectedChannels"
           :max-freq="60"
@@ -392,27 +370,22 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 信息面板 -->
+    <!-- ✅ 信息面板保留性能监控 -->
     <div class="info-panel">
       <div class="info-item">
-        <strong>渲染模式:</strong> 事件驱动WebGL渲染 🚀
-      </div>
-      <div class="info-item">
-        <strong>波前位置:</strong> {{ waveFrontX.toFixed(1) }}%
-      </div>
-      <div class="info-item">
-        <strong>频域更新:</strong> {{ Math.round(frontendRenderRate) }}Hz
-      </div>
-      <div class="info-item">
-        <strong>后端数据率:</strong> {{ Math.round(backendDataRate) }}Hz
+        <strong>架构:</strong> 混合模式（连接管理 + 独立画布监听） 🎯
       </div>
       <div class="info-item">
         <strong>时域渲染率:</strong> {{ Math.round(timedomainRenderRate) }}Hz
+      </div>
+      <div class="info-item">
+        <strong>频域更新率:</strong> {{ Math.round(frequencyRenderRate) }}Hz
       </div>
     </div>
   </div>
 </template>
 
+<!-- 样式保持不变 -->
 <style scoped>
 /* 基础样式保持不变... */
 .eeg-visualizer {

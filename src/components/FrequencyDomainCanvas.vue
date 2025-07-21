@@ -1,7 +1,7 @@
 <!-- filepath: src/components/FrequencyDomainCanvas.vue -->
 <template>
   <div class="frequency-panel">
-    <h3>实时频谱分析 (1-{{ maxFreq }}Hz) - 事件驱动WebGL</h3>
+    <h3>实时频谱分析 (1-{{ maxFreq }}Hz) - 事件驱动WebGL ({{ channelsCount }}通道)</h3>
     <canvas 
       ref="spectrumCanvasRef" 
       class="spectrum-canvas"
@@ -18,14 +18,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue';
 import { WebglPlot, WebglLine, ColorRGBA } from 'webgl-plot';
 import { listen } from '@tauri-apps/api/event';
 
-// Props
+// ✅ Props接口
 interface Props {
-  channelsCount: number;
-  sampleRate: number;
+  streamInfo: any | null;  // 使用any避免重复定义
   channelVisibility: boolean[];
   selectedChannels: Set<number>;
   maxFreq?: number;
@@ -34,6 +33,9 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   maxFreq: 50
 });
+
+// ✅ 修复计算属性
+const channelsCount = computed(() => props.streamInfo?.channels_count || 0);
 
 // Emits
 interface Emits {
@@ -120,14 +122,14 @@ function initWebGLPlot() {
 function initChannelLines() {
   if (!wglp) return;
   
-  console.log(`🎨 初始化 ${props.channelsCount} 个通道的频域线条`);
+  console.log(`🎨 初始化 ${channelsCount.value} 个通道的频域线条`);
   
   // 清除现有线条
   wglp.removeAllLines();
   channelLines.length = 0;
   
   // 为每个通道创建线条
-  for (let ch = 0; ch < props.channelsCount; ch++) {
+  for (let ch = 0; ch < channelsCount.value; ch++) {
     const color = channelColors[ch % channelColors.length];
     const line = new WebglLine(color, FREQ_BINS);
     
@@ -151,10 +153,10 @@ function initChannelLines() {
 
 // 计算通道在Y轴上的偏移
 function calculateChannelOffset(channelIndex: number): number {
-  if (props.channelsCount <= 1) return 0;
+  if (channelsCount.value <= 1) return 0;
   
   // 将整个Y轴范围 [-1, 1] 分配给所有通道
-  const channelHeight = 2 / props.channelsCount;
+  const channelHeight = 2 / channelsCount.value;
   const centerY = 1 - (channelIndex + 0.5) * channelHeight;
   
   return centerY;
@@ -162,41 +164,10 @@ function calculateChannelOffset(channelIndex: number): number {
 
 // 计算通道的缩放因子
 function calculateChannelScale(): number {
-  if (props.channelsCount <= 1) return 0.8;
+  if (channelsCount.value <= 1) return 0.8;
   
-  const maxChannelHeight = (2 / props.channelsCount) * 0.8;
+  const maxChannelHeight = (2 / channelsCount.value) * 0.8;
   return maxChannelHeight / 2;
-}
-
-// ✅ 核心功能：事件驱动的频域渲染
-function handleFrameUpdate(event: any) {
-  const startTime = performance.now();
-  
-  if (!wglp || channelLines.length === 0) {
-    return;
-  }
-  
-  const { frequency_domain } = event.payload;
-  if (!frequency_domain || frequency_domain.length === 0) {
-    return;
-  }
-  
-  console.log(`🎵 直接处理 ${frequency_domain.length} 个通道的频域数据`);
-  
-  // ✅ 直接处理后端的频域数据
-  updateSpectrumDirect(frequency_domain);
-  
-  // ✅ 一次性WebGL更新
-  try {
-    wglp.update();
-  } catch (error) {
-    console.error('频域WebGL更新错误:', error);
-    return;
-  }
-  
-  // 性能统计
-  const endTime = performance.now();
-  updatePerformanceStats(startTime, endTime);
 }
 
 // ✅ 直接更新频谱：核心渲染逻辑
@@ -208,7 +179,7 @@ function updateSpectrumDirect(spectrumData: FreqData[]) {
     const ch = freqData.channel_index;
     
     // 检查通道索引有效性和可见性
-    if (ch >= channelLines.length || ch >= props.channelsCount) {
+    if (ch >= channelLines.length || ch >= channelsCount.value) {
       continue;
     }
     
@@ -331,9 +302,9 @@ function handleResize() {
 }
 
 // 监听器
-watch(() => props.channelsCount, () => {
-  console.log(`📊 频域通道数变化: ${props.channelsCount}`);
-  if (wglp && props.channelsCount > 0) {
+watch(() => channelsCount.value, () => {
+  console.log(`📊 频域通道数变化: ${channelsCount.value}`);
+  if (wglp && channelsCount.value > 0) {
     initChannelLines();
   }
 }, { immediate: true });
@@ -351,16 +322,16 @@ onMounted(async () => {
   await nextTick();
   initWebGLPlot();
   
-  // ✅ 关键：监听后端frame-update事件，专注频域数据
-  const unlistenFrameUpdate = await listen('frame-update', handleFrameUpdate);
+  // ❌ 删除: const unlistenFrameUpdate = await listen('frame-update', handleFrameUpdate);
+  // ✅ 新增: 监听频域专用事件
+  const unlistenFrequencyUpdate = await listen('frequency-update', handleFrequencyUpdate);
   
-  // 保存取消监听的函数
   onUnmounted(() => {
-    unlistenFrameUpdate();
+    unlistenFrequencyUpdate();
   });
   
   window.addEventListener('resize', handleResize);
-  console.log('🎧 频域事件监听器已设置，等待后端频域数据...');
+  console.log('🌊 频域画布独立监听器已设置');
 });
 
 onUnmounted(() => {
@@ -380,6 +351,33 @@ defineExpose({
   initCanvas,
   clearSpectrum
 });
+
+// ❌ 删除原来的handleFrameUpdate函数
+
+// ✅ 新增：专门处理频域数据
+function handleFrequencyUpdate(event: any) {
+  const startTime = performance.now();
+  
+  if (!wglp || channelLines.length === 0) return;
+  
+  // ✅ 直接处理频域数据（已经是JSON格式）
+  const freqData = event.payload as FreqData[];
+  
+  console.log(`🌊 Frequency update: ${freqData.length}通道`);
+  
+  // 直接更新频谱
+  updateSpectrumDirect(freqData);
+  
+  // 单次WebGL更新
+  wglp.update();
+  
+  // 性能统计
+  const endTime = performance.now();
+  updatePerformanceStats(startTime, endTime);
+}
+
+// ✅ updateSpectrumDirect函数保持不变（已经是最优的）
+// ✅ WebGL相关代码完全不需要修改
 </script>
 
 <style scoped>

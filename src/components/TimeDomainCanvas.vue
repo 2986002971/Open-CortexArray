@@ -54,14 +54,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue';
 import { WebglPlot, WebglLine, ColorRGBA } from 'webgl-plot';
 import { listen } from '@tauri-apps/api/event';
+import { BatchedBinaryParser } from '../utils/binaryParser';
+import type { StreamInfo } from '../types';
 
-// Props
+// ✅ Props定义
 interface Props {
-  channelsCount: number;
-  sampleRate: number;
+  streamInfo: StreamInfo | null;
   channelVisibility: boolean[];
   selectedChannels: Set<number>;
   hoveredChannel: number;
@@ -70,16 +71,20 @@ interface Props {
 
 const props = defineProps<Props>();
 
-// Emits
-interface Emits {
-  (e: 'toggle-channel', channelIndex: number): void;
-  (e: 'select-channel', channelIndex: number, isMultiSelect: boolean): void;
-  (e: 'hover-channel', channelIndex: number): void;
-  (e: 'update-render-rate', rate: number): void;
-  (e: 'update-wave-front', position: number): void;
-}
+// ✅ 正确的emit定义
+const emit = defineEmits<{
+  'toggle-channel': [channelIndex: number];
+  'select-channel': [channelIndex: number, isMultiSelect: boolean];
+  'hover-channel': [channelIndex: number];
+  'update-render-rate': [rate: number];
+}>();
 
-const emit = defineEmits<Emits>();
+// 计算属性
+const channelsCount = computed(() => props.streamInfo?.channels_count || 0);
+const sampleRate = computed(() => props.streamInfo?.sample_rate || 250);
+
+// 二进制解析器
+const batchedParser = new BatchedBinaryParser();
 
 // WebGL相关
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -151,15 +156,15 @@ function initWebGL() {
 
 // 预计算缓存值
 function updateCachedValues() {
-  if (props.channelsCount !== lastChannelsCount) {
+  if (channelsCount.value !== lastChannelsCount) {
     cachedChannelOffsets = [];
-    for (let ch = 0; ch < props.channelsCount; ch++) {
+    for (let ch = 0; ch < channelsCount.value; ch++) {
       cachedChannelOffsets[ch] = calculateChannelOffset(ch);
     }
     cachedChannelScale = calculateChannelScale();
-    lastChannelsCount = props.channelsCount;
+    lastChannelsCount = channelsCount.value;
     
-    console.log(`📊 缓存更新: ${props.channelsCount}通道, 缩放=${cachedChannelScale.toFixed(4)}`);
+    console.log(`📊 缓存更新: ${channelsCount.value}通道, 缩放=${cachedChannelScale.toFixed(4)}`);
   }
 }
 
@@ -167,7 +172,7 @@ function updateCachedValues() {
 function initChannelLines() {
   if (!wglp) return;
   
-  console.log(`🎨 初始化 ${props.channelsCount} 个通道的时域线条`);
+  console.log(`🎨 初始化 ${channelsCount.value} 个通道的时域线条`);
   
   // 清除现有线条
   wglp.removeAllLines();
@@ -177,7 +182,7 @@ function initChannelLines() {
   updateCachedValues();
   
   // 为每个通道创建线条
-  for (let ch = 0; ch < props.channelsCount; ch++) {
+  for (let ch = 0; ch < channelsCount.value; ch++) {
     const colorHex = channelColors[ch % channelColors.length];
     const color = hexToColorRGBA(colorHex);
     
@@ -205,15 +210,15 @@ function initChannelLines() {
 
 // 计算函数保持不变
 function calculateChannelOffset(channelIndex: number): number {
-  if (props.channelsCount <= 1) return 0;
-  const channelHeight = 2 / props.channelsCount;
+  if (channelsCount.value <= 1) return 0;
+  const channelHeight = 2 / channelsCount.value;
   const centerY = 1 - (channelIndex + 0.5) * channelHeight;
   return centerY;
 }
 
 function calculateChannelScale(): number {
-  if (props.channelsCount <= 1) return 0.4;
-  const maxChannelHeight = (2 / props.channelsCount) * 0.8;
+  if (channelsCount.value <= 1) return 0.4;
+  const maxChannelHeight = (2 / channelsCount.value) * 0.8;
   return maxChannelHeight / 200; // 信号范围 [-100, 100]
 }
 
@@ -225,73 +230,62 @@ function hexToColorRGBA(hex: string): ColorRGBA {
 }
 
 // ✅ 核心功能：事件驱动的直接渲染
-function handleFrameUpdate(event: any) {
+function handleBinaryFrameUpdate(event: any) {
   const startTime = performance.now();
   
-  if (!wglp || channelLines.length === 0) {
+  if (!wglp || channelLines.length === 0) return;
+  
+  // ✅ 解析二进制数据
+  const binaryArray = event.payload as number[];
+  const buffer = new Uint8Array(binaryArray).buffer;
+  
+  const parsed = batchedParser.parseForTimeRendering(buffer);
+  if (!parsed) {
+    console.warn('Failed to parse binary frame');
     return;
   }
   
-  const { time_domain } = event.payload;
-  if (!time_domain || !time_domain.samples) {
-    return;
-  }
+  // ✅ 通道优先批量更新
+  updateChannelsBatch(parsed.channelData, parsed.metadata.samples_per_channel);
   
-  // ✅ 直接处理后端批处理好的样本
-  const samples = time_domain.samples;
-  console.log(`📦 直接处理 ${samples.length} 个样本`);
-  
-  // 更新每个样本
-  for (const sample of samples) {
-    updateSingleSample(sample);
-  }
-  
-  // ✅ 一次性WebGL更新
-  try {
-    wglp.update();
-  } catch (error) {
-    console.error('WebGL更新错误:', error);
-    return;
-  }
+  // 单次WebGL更新
+  wglp.update();
   
   // 性能统计
   const endTime = performance.now();
   updatePerformanceStats(startTime, endTime);
-  
-  // 更新波前位置
-  waveFrontPosition.value = currentIndex / DISPLAY_POINTS;
-  emit('update-wave-front', waveFrontPosition.value);
 }
 
-// ✅ 单样本更新：最核心的渲染逻辑
-function updateSingleSample(sample: any) {
-  if (!sample || !sample.channels) {
-    return;
-  }
-  
-  // 为每个通道更新一个数据点
-  for (let ch = 0; ch < props.channelsCount; ch++) {
+// ✅ 新增：通道优先批量更新
+function updateChannelsBatch(
+  channelDataArray: Array<{ channel_index: number; samples: Float32Array }>,
+  samplesPerChannel: number
+) {
+  // 外层循环：遍历通道（cache友好）
+  for (const channelData of channelDataArray) {
+    const ch = channelData.channel_index;
     const line = channelLines[ch];
-    if (!line) continue;
     
-    // 处理可见性
-    if (!props.channelVisibility[ch]) {
-      // 不可见通道：设置为基线
-      line.setY(currentIndex, cachedChannelOffsets[ch]);
-      continue;
+    if (!line || !props.channelVisibility[ch]) continue;
+    
+    // 内层循环：连续处理单通道数据
+    const samples = channelData.samples;
+    const channelOffset = cachedChannelOffsets[ch];
+    const scale = cachedChannelScale;
+    
+    // ✅ 批量设置Y值（性能关键）
+    for (let i = 0; i < samples.length; i++) {
+      const renderIndex = (currentIndex + i) % DISPLAY_POINTS;
+      const y = channelOffset + samples[i] * scale;
+      line.setY(renderIndex, y);
     }
     
-    // 更新线条颜色（选中状态）
     updateLineColor(line, ch);
-    
-    // 计算并设置Y值
-    const amplitude = sample.channels[ch] || 0;
-    const y = cachedChannelOffsets[ch] + amplitude * cachedChannelScale;
-    line.setY(currentIndex, y);
   }
   
-  // 波前前进
-  currentIndex = (currentIndex + 1) % DISPLAY_POINTS;
+  // 批量更新波前
+  currentIndex = (currentIndex + samplesPerChannel) % DISPLAY_POINTS;
+  waveFrontPosition.value = currentIndex / DISPLAY_POINTS;
 }
 
 // ✅ 颜色更新优化
@@ -380,18 +374,18 @@ function handleResize() {
 }
 
 // 监听器
-watch(() => props.channelsCount, () => {
-  console.log(`📊 时域通道数变化: ${props.channelsCount}`);
-  if (wglp && props.channelsCount > 0) {
+watch(() => channelsCount.value, () => {
+  console.log(`📊 时域通道数变化: ${channelsCount.value}`);
+  if (wglp && channelsCount.value > 0) {
     initChannelLines();
   }
 }, { immediate: true });
 
-watch(() => props.sampleRate, () => {
-  console.log(`📊 时域采样率变化: ${props.sampleRate}`);
+watch(() => sampleRate.value, () => {
+  console.log(`📊 时域采样率变化: ${sampleRate.value}`);
   // 重新计算显示点数
-  DISPLAY_POINTS = 5 * props.sampleRate; // 5秒显示窗口
-  if (wglp && props.channelsCount > 0) {
+  DISPLAY_POINTS = 5 * sampleRate.value; // 5秒显示窗口
+  if (wglp && channelsCount.value > 0) {
     initChannelLines();
   }
 });
@@ -409,16 +403,16 @@ onMounted(async () => {
   await nextTick();
   initWebGL();
   
-  // ✅ 关键：监听后端数据事件而不是启动渲染循环
-  const unlistenFrameUpdate = await listen('frame-update', handleFrameUpdate);
+  // ❌ 删除: const unlistenFrameUpdate = await listen('frame-update', handleFrameUpdate);
+  // ✅ 新增: 监听二进制事件
+  const unlistenBinaryFrame = await listen('binary-frame-update', handleBinaryFrameUpdate);
   
-  // 保存取消监听的函数
   onUnmounted(() => {
-    unlistenFrameUpdate();
+    unlistenBinaryFrame();
   });
   
   window.addEventListener('resize', handleResize);
-  console.log('🎧 事件监听器已设置，等待后端数据...');
+  console.log('🎧 时域画布独立二进制监听器已设置');
 });
 
 onUnmounted(() => {
