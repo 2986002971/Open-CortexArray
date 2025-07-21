@@ -471,17 +471,23 @@ impl EegProcessor {
         is_running: Arc<tokio::sync::RwLock<bool>>,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            println!("🔵 Frontend thread started (with batch matching)");
+            println!("🔥 Frontend thread started (with binary optimization)");
             
             let mut frame_timer = tokio::time::interval(
                 Duration::from_millis(FRAME_INTERVAL_MS)
             );
             
+            // ✅ 添加优化组件
+            let mut data_converter = DataConverter::new(channels_count as usize);
+            let mut binary_builder = BinaryFrameBuilder::new();
+            
+            // 保持现有的缓冲区逻辑
             let mut freq_buffer: std::collections::HashMap<u64, Vec<FreqData>> = std::collections::HashMap::new();
             let mut time_buffer: std::collections::HashMap<u64, EegBatch> = std::collections::HashMap::new();
             
             let mut frame_count = 0u64;
             let mut next_expected_batch_id = 0u64;
+            let mut binary_frames_sent = 0u64;
             
             // ✅ 使用FFT模块的工具函数
             let create_empty_freq_data = move || fft_utils::create_empty_freq_data(channels_count);
@@ -494,12 +500,12 @@ impl EegProcessor {
                         {
                             let running = is_running.read().await;
                             if !*running {
-                                println!("🔵 Frontend thread stopping");
+                                println!("🔥 Frontend thread stopping");
                                 break;
                             }
                         }
                         
-                        // 收集数据到缓冲区
+                        // 收集数据到缓冲区（保持现有逻辑）
                         while let Ok((batch_id, freq_data)) = freq_rx.try_recv() {
                             freq_buffer.insert(batch_id, freq_data);
                         }
@@ -508,7 +514,7 @@ impl EegProcessor {
                             time_buffer.insert(time_domain.batch_id, time_domain);
                         }
                         
-                        // 发送匹配的数据对
+                        // ✅ 处理匹配的数据对
                         let mut sent_data = false;
                         
                         if let (Some(time_domain), freq_data) = (
@@ -517,47 +523,51 @@ impl EegProcessor {
                         ) {
                             let freq_data = freq_data.unwrap_or_else(|| create_empty_freq_data());
                             
-                            let payload = FramePayload {
-                                time_domain,
-                                frequency_domain: freq_data,
-                            };
+                            // ✅ 发送二进制优化版本
+                            Self::send_optimized_frame(
+                                &mut data_converter,
+                                &mut binary_builder,
+                                &time_domain,
+                                &freq_data,
+                                &app_handle,
+                            ).await;
                             
-                            if let Err(e) = app_handle.emit("frame-update", &payload) {
-                                println!("Failed to emit frame-update: {}", e);
-                            } else {
-                                frame_count += 1;
-                                sent_data = true;
-                                
-                                if frame_count <= 5 {
-                                    println!("🔵 Frame #{} sent - matched batch #{}", 
-                                             frame_count, next_expected_batch_id);
-                                }
+                            frame_count += 1;
+                            binary_frames_sent += 1;
+                            sent_data = true;
+                            
+                            if frame_count <= 5 {
+                                println!("🔥 Binary Frame #{} sent - matched batch #{}", 
+                                         frame_count, next_expected_batch_id);
                             }
                             
                             next_expected_batch_id += 1;
+                            
                         } else if let Some(time_domain) = time_buffer.remove(&next_expected_batch_id) {
                             let freq_data = create_empty_freq_data();
                             
-                            let payload = FramePayload {
-                                time_domain,
-                                frequency_domain: freq_data,
-                            };
+                            // ✅ 发送二进制优化版本（仅时域）
+                            Self::send_optimized_frame(
+                                &mut data_converter,
+                                &mut binary_builder,
+                                &time_domain,
+                                &freq_data,
+                                &app_handle,
+                            ).await;
                             
-                            if let Err(e) = app_handle.emit("frame-update", &payload) {
-                                println!("Failed to emit frame-update: {}", e);
-                            } else {
-                                frame_count += 1;
-                                sent_data = true;
-                                
-                                if frame_count <= 10 {
-                                    println!("🔵 Frame #{} sent - batch #{} (time only, FFT pending)", 
-                                             frame_count, next_expected_batch_id);
-                                }
+                            frame_count += 1;
+                            binary_frames_sent += 1;
+                            sent_data = true;
+                            
+                            if frame_count <= 10 {
+                                println!("🔥 Binary Frame #{} sent - batch #{} (time only)", 
+                                         frame_count, next_expected_batch_id);
                             }
                             
                             next_expected_batch_id += 1;
                         }
                         
+                        // ✅ 空帧处理
                         if !sent_data {
                             let empty_time = EegBatch {
                                 samples: vec![],
@@ -566,33 +576,67 @@ impl EegProcessor {
                                 sample_rate,
                             };
                             
-                            let payload = FramePayload {
-                                time_domain: empty_time,
-                                frequency_domain: create_empty_freq_data(),
-                            };
+                            let empty_freq = create_empty_freq_data();
                             
-                            if let Err(e) = app_handle.emit("frame-update", &payload) {
-                                println!("Failed to emit frame-update: {}", e);
-                            } else {
-                                frame_count += 1;
-                            }
+                            Self::send_optimized_frame(
+                                &mut data_converter,
+                                &mut binary_builder,
+                                &empty_time,
+                                &empty_freq,
+                                &app_handle,
+                            ).await;
+                            
+                            frame_count += 1;
                         }
                         
-                        // 清理缓冲区
+                        // 清理缓冲区（保持现有逻辑）
                         let cleanup_threshold = next_expected_batch_id.saturating_sub(10);
                         freq_buffer.retain(|&batch_id, _| batch_id >= cleanup_threshold);
                         time_buffer.retain(|&batch_id, _| batch_id >= cleanup_threshold);
                         
+                        // ✅ 增强统计信息
                         if frame_count % 300 == 0 && frame_count > 0 {
-                            println!("🔵 Buffer status: freq={}, time={}, next_expected={}", 
-                                     freq_buffer.len(), time_buffer.len(), next_expected_batch_id);
+                            println!("🔥 Status: {} frames sent, {} binary, buffer: freq={}, time={}", 
+                                     frame_count, binary_frames_sent, 
+                                     freq_buffer.len(), time_buffer.len());
                         }
                     }
                 }
             }
             
-            println!("🔵 Frontend thread stopped - frames sent: {}", frame_count);
+            println!("🔥 Frontend thread stopped - frames: {}, binary: {}", 
+                     frame_count, binary_frames_sent);
         })
+    }
+    
+    /// ✅ 发送优化帧的辅助函数
+    async fn send_optimized_frame(
+        data_converter: &mut DataConverter,
+        binary_builder: &mut BinaryFrameBuilder,
+        time_domain: &EegBatch,
+        freq_data: &[FreqData],
+        app_handle: &AppHandle,
+    ) {
+        // ✅ 转换为优化格式
+        let optimized_batch = data_converter.convert_eeg_batch_to_optimized(
+            time_domain,
+            time_domain.batch_id
+        );
+        
+        // ✅ 生成二进制帧
+        let binary_frame = binary_builder.build_channel_major_frame(&optimized_batch);
+        
+        // ✅ 发送二进制数据到前端
+        if let Err(e) = app_handle.emit("binary-frame-update", &binary_frame) {
+            println!("Failed to emit binary frame: {}", e);
+        }
+        
+        // ✅ 可选：同时发送频域数据（如果需要保持兼容性）
+        if !freq_data.is_empty() {
+            if let Err(e) = app_handle.emit("frequency-update", &freq_data) {
+                println!("Failed to emit frequency data: {}", e);
+            }
+        }
     }
 }
 
