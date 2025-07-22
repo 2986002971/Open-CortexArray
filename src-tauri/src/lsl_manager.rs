@@ -302,45 +302,26 @@ impl LslManager {
     
     fn discover_streams_impl() -> Result<Vec<LslStreamInfo>, AppError> {
         println!("🔍 Discovering LSL streams...");
-        
-        // ✅ 使用真实的LSL发现功能
-        match lsl::resolve_bypred("type='EEG'", 0, 5.0) {
-            Ok(streams) => {
-                let mut lsl_streams = Vec::new();
-                
-                for stream in streams {
-                    // ✅ 修复：使用正确的LSL方法名
-                    let lsl_stream = LslStreamInfo {
-                        name: stream.stream_name(),                    // ✅ 修复：stream_name()
-                        stream_type: stream.stream_type(),             // ✅ 修复：stream_type()
-                        channels_count: stream.channel_count() as u32, // ✅ 修复：channel_count()
-                        sample_rate: stream.nominal_srate(),           // ✅ 修复：nominal_srate()
-                        source_id: stream.source_id(),                 // ✅ 修复：source_id()
-                        hostname: stream.hostname(),                   // ✅ 修复：hostname()
-                    };
-                    
-                    lsl_streams.push(lsl_stream);
-                }
-                
-                println!("✅ Found {} LSL streams", lsl_streams.len());
-                Ok(lsl_streams)
-            }
+        // 最宽松，发现所有流
+        let streams = match lsl::resolve_streams(2.0) {
+            Ok(s) => s,
             Err(e) => {
-                println!("⚠️  LSL discovery error: {:?}", e);
-                // 如果LSL发现失败，返回模拟数据用于测试
-                println!("🔧 Falling back to mock data for testing");
-                Ok(vec![
-                    LslStreamInfo {
-                        name: "MockEEG".to_string(),
-                        stream_type: "EEG".to_string(),
-                        channels_count: 8,
-                        sample_rate: 250.0,
-                        source_id: "mock_device_001".to_string(),
-                        hostname: "localhost".to_string(),
-                    }
-                ])
+                println!("⚠️  resolve_streams error: {:?}", e);
+                vec![]
             }
+        };
+        for stream in &streams {
+            println!("发现流: name={}, type={}, source_id={}", stream.stream_name(), stream.stream_type(), stream.source_id());
         }
+        let lsl_streams = streams.iter().map(|stream| LslStreamInfo {
+            name: stream.stream_name(),
+            stream_type: stream.stream_type(),
+            channels_count: stream.channel_count() as u32,
+            sample_rate: stream.nominal_srate(),
+            source_id: stream.source_id(),
+            hostname: stream.hostname(),
+        }).collect();
+        Ok(lsl_streams)
     }
     
     fn connect_to_stream_impl(
