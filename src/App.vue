@@ -361,12 +361,20 @@ onMounted(async () => {
 
 <!-- 样式保持不变 -->
 <style scoped>
-/* 基础样式保持不变... */
+/* 🔧 CSS重置 - 移除浏览器默认的margin和padding */
+:global(html), :global(body) {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
 .eeg-visualizer {
   display: flex;
   flex-direction: column;
-  height: 100vh; /* 全屏高度 */
+  height: 100vh;
   min-height: 0;
+  background: linear-gradient(135deg, #181c24 0%, #23293a 100%);
+  color: #eaf6fb;
 }
 
 .top-bar {
@@ -375,24 +383,18 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   padding: 0.5rem 2rem;
-  background: rgba(255,255,255,0.95);
-  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-  border-bottom: 1px solid #eee;
+  background: rgba(24, 28, 36, 0.95);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+  border-bottom: 1px solid #23293a;
   min-height: 64px;
   z-index: 10;
-}
-
-.logo-title {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
 }
 
 .logo-title h1 {
   margin: 0;
   font-size: 1.8rem;
   font-weight: 700;
-  background: linear-gradient(45deg, #667eea, #764ba2);
+  background: linear-gradient(90deg, #7fdaff, #a18fff, #6fffb0, #ffd6a5);
   background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -400,36 +402,28 @@ onMounted(async () => {
 
 .stream-info {
   font-size: 0.9rem;
-  color: #666;
-  background: rgba(0, 0, 0, 0.05);
+  color: #b3c2d6;
+  background: rgba(32, 39, 58, 0.6);
   padding: 0.3rem 0.8rem;
   border-radius: 15px;
 }
 
-.connection-status {
-  padding: 0.4rem 1rem;
-  border-radius: 20px;
-  font-weight: 600;
-  font-size: 0.85rem;
-}
-
 .connection-status.connected {
-  background: #d4edda;
-  color: #155724;
-  border: 1px solid #c3e6cb;
+  background: #213e2e;
+  color: #7fffd4;
+  border: 1px solid #2ec4b6;
 }
 
 .connection-status.disconnected {
-  background: #f8d7da;
-  color: #721c24;
-  border: 1px solid #f5c6cb;
+  background: #3a2329;
+  color: #ff7f7f;
+  border: 1px solid #ff4b2b;
 }
 
 .control-panel {
   display: flex;
   gap: 1rem;
   align-items: center;
-  /* 保持原按钮样式 */
 }
 
 .control-group {
@@ -446,6 +440,7 @@ onMounted(async () => {
   cursor: pointer;
   transition: all 0.3s ease;
   font-size: 0.9rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
 
 .btn:disabled {
@@ -454,62 +449,52 @@ onMounted(async () => {
 }
 
 .btn-primary {
-  background: linear-gradient(45deg, #667eea, #764ba2);
-  color: white;
+  background: linear-gradient(90deg, #7fdaff 0%, #a18fff 100%);
+  color: #181c24;
 }
 
 .btn-primary:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 4px 15px rgba(127, 218, 255, 0.4);
 }
 
 .btn-success {
-  background: linear-gradient(45deg, #56ab2f, #a8e6cf);
-  color: white;
+  background: linear-gradient(90deg, #6fffb0 0%, #2ec4b6 100%);
+  color: #181c24;
 }
 
 .btn-danger {
-  background: linear-gradient(45deg, #ff416c, #ff4b2b);
-  color: white;
+  background: linear-gradient(90deg, #ff7f7f 0%, #ff4b2b 100%);
+  color: #181c24;
 }
 
-.filename-input {
-  padding: 0.6rem 1rem;
-  border: 2px solid #e0e0e0;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  transition: border-color 0.3s ease;
-}
-
-.filename-input:focus {
-  outline: none;
-  border-color: #667eea;
-}
-
+.filename-input,
 .stream-select {
   padding: 0.6rem 1rem;
-  border: 2px solid #e0e0e0;
+  border: 2px solid #2ec4b6;
   border-radius: 8px;
   font-size: 0.9rem;
-  background: white;
-  cursor: pointer;
+  background: #23293a;
+  color: #eaf6fb;
   transition: border-color 0.3s ease;
-  min-width: 200px;
 }
 
-.stream-select:focus {
+.filename-input:focus,
+.stream-select:focus,
+.btn:focus {
   outline: none;
-  border-color: #667eea;
+  border-color: #7fdaff; /* 极光蓝色 */
+  box-shadow: 0 0 0 2px #7fdaff44; /* 极光色外发光 */
 }
 
 .stream-select:disabled {
-  background: #f5f5f5;
+  background: #23293a;
   cursor: not-allowed;
   opacity: 0.6;
 }
 
 .recording-indicator {
-  color: #dc3545;
+  color: #ff7f7f;
   font-weight: 600;
   animation: pulse 1.5s infinite;
 }
@@ -527,22 +512,22 @@ onMounted(async () => {
 
 .help-text {
   font-size: 0.8rem;
-  color: #666;
+  color: #b3c2d6;
   font-style: italic;
 }
 
 .visualization-area {
   flex: 1;
   padding: 2rem;
-  background: rgba(255, 255, 255, 0.95);
+  background: rgba(32, 39, 58, 0.95);
   margin: 0 2rem 2rem;
   border-radius: 12px;
-  box-shadow: 0 4px 25px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 25px rgba(0, 0, 0, 0.25);
   backdrop-filter: blur(10px);
   min-height: 500px;
 }
 
-/* ✅ 新增：架构信息展示 */
+/* 架构信息展示 */
 .connection-prompt {
   text-align: center;
   padding: 3rem 0;
@@ -551,13 +536,13 @@ onMounted(async () => {
 .architecture-info {
   margin-top: 2rem;
   padding: 1.5rem;
-  background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+  background: linear-gradient(135deg, #23293a 0%, #181c24 100%);
   border-radius: 12px;
-  border-left: 4px solid #667eea;
+  border-left: 4px solid #7fdaff;
 }
 
 .architecture-info h4 {
-  color: #495057;
+  color: #7fdaff;
   margin-bottom: 1rem;
 }
 
@@ -570,7 +555,7 @@ onMounted(async () => {
 
 .architecture-info li {
   margin: 0.5rem 0;
-  color: #666;
+  color: #b3c2d6;
 }
 
 .dual-canvas-layout {
@@ -593,7 +578,6 @@ onMounted(async () => {
   height: 100%;
 }
 
-
 /* 响应式设计 */
 @media (max-width: 1200px) {
   .dual-canvas-layout {
@@ -601,8 +585,6 @@ onMounted(async () => {
     height: auto;
     gap: 1.5rem;
   }
-  
-  /* 在垂直布局时重置flex */
   .dual-canvas-layout > * {
     flex: none;
     min-width: auto;
@@ -615,17 +597,14 @@ onMounted(async () => {
     gap: 1rem;
     text-align: center;
   }
-  
   .control-panel {
     flex-direction: column;
     align-items: stretch;
   }
-  
   .visualization-area {
     margin: 0 1rem 1rem;
     padding: 1rem;
   }
-  
   .info-panel {
     flex-direction: column;
     gap: 0.5rem;
