@@ -1,7 +1,7 @@
 <!-- filepath: src/components/FrequencyDomainCanvas.vue -->
 <template>
   <div class="frequency-panel">
-    <h3>实时频谱分析 (1-{{ maxFreq }}Hz) - 事件驱动WebGL ({{ channelsCount }}通道)</h3>
+    <h3>实时频谱分析 - (1-{{ maxFreq }}Hz)</h3>
     <canvas 
       ref="spectrumCanvasRef" 
       class="spectrum-canvas"
@@ -382,21 +382,16 @@ function handleFrequencyUpdate(event: any) {
 
 <style scoped>
 .frequency-panel {
-  /* ✅ 移除圆角矩形样式，与时域保持一致 */
   height: 100%;
   width: 100%;
   display: flex;
   flex-direction: column;
   position: relative;
-  
-  background: #f8f9fa;
-  border-radius: 8px;
+  background: linear-gradient(135deg, #181c24 0%, #23293a 100%);
+  border-radius: 12px;
   padding: 1rem;
-  border: 2px solid #e9ecef;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
- 
-  
-  /* ✅ 保留基本布局属性 */
+  border: 2px solid #7fdaff;
+  box-shadow: 0 4px 25px rgba(127, 218, 255, 0.08);
   box-sizing: border-box;
   overflow: hidden;
 }

@@ -441,13 +441,11 @@ defineExpose({
   display: flex;
   flex-direction: column;
   position: relative;
-  
-  /* ✅ 添加与频域相同的圆角矩形样式 */
-  background: #f8f9fa;
-  border-radius: 8px;
+  background: linear-gradient(135deg, #181c24 0%, #23293a 100%);
+  border-radius: 12px;
   padding: 1rem;
-  border: 2px solid #e9ecef;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+  border: 2px solid #7fdaff;
+  box-shadow: 0 4px 25px rgba(127, 218, 255, 0.08);
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -528,6 +526,8 @@ defineExpose({
   pointer-events: none;
 }
 
+
+/* 通道标签深色化 */
 .channel-label {
   position: absolute;
   width: 100%;
@@ -536,31 +536,33 @@ defineExpose({
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
   font-weight: 600;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(32, 39, 58, 0.92);
   border-right: 2px solid;
   border-radius: 0 4px 4px 0;
   cursor: pointer;
   pointer-events: auto;
   transition: all 0.2s ease;
   z-index: 10;
+  color: #eaf6fb;
 }
 
 .channel-label:hover {
-  background: rgba(255, 255, 255, 0.95);
+  background: rgba(32, 39, 58, 1);
   transform: translateX(2px);
-  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 2px 0 8px rgba(127, 218, 255, 0.12);
 }
 
 .channel-label.selected {
-  background: rgba(255, 255, 255, 1);
+  background: linear-gradient(90deg, #7fdaff 0%, #a18fff 100%);
+  color: #181c24;
   transform: translateX(4px);
-  box-shadow: 4px 0 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 4px 0 12px rgba(127, 218, 255, 0.18);
   font-weight: 700;
 }
 
 .channel-label.hidden {
   opacity: 0.5;
-  background: rgba(240, 240, 240, 0.8);
+  background: rgba(32, 39, 58, 0.5);
 }
 
 .channel-indicator {

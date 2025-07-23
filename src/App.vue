@@ -468,8 +468,7 @@ onMounted(async () => {
   color: #181c24;
 }
 
-.filename-input,
-.stream-select {
+.filename-input {
   padding: 0.6rem 1rem;
   border: 2px solid #2ec4b6;
   border-radius: 8px;
@@ -479,10 +478,27 @@ onMounted(async () => {
   transition: border-color 0.3s ease;
 }
 
+.stream-select {
+  padding: 0.6rem 1rem;
+  background-color: #181c24 !important;
+  color: #eaf6fb !important;
+  border: 2px solid #7fdaff !important;
+  box-shadow: 0 2px 8px rgba(127, 218, 255, 0.08);
+  font-weight: 600;
+  text-shadow: 0 1px 2px #23293a;
+  appearance: none; /* 去除系统默认样式，部分浏览器支持 */
+}
+
+.stream-select option {
+  background: #23293a;
+  color: #eaf6fb;
+}
+
 .filename-input:focus,
 .stream-select:focus,
 .btn:focus {
   outline: none;
+  background: #23293a;
   border-color: #7fdaff; /* 极光蓝色 */
   box-shadow: 0 0 0 2px #7fdaff44; /* 极光色外发光 */
 }
