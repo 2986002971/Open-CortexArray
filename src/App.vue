@@ -239,147 +239,121 @@ onMounted(async () => {
 
 <template>
   <div class="eeg-visualizer">
-    <!-- ✅ 标题栏保持不变 -->
-    <header class="header">
-      <h1>Open CortexArray - EEG可视化系统 V2.5 (混合架构)</h1>
-      <div class="status-info">
-        <span v-if="streamInfo" class="stream-info">
-          {{ streamInfo.name }} | {{ streamInfo.channels_count }}通道 | {{ streamInfo.sample_rate }}Hz
-        </span>
-        <span :class="['connection-status', isConnected ? 'connected' : 'disconnected']">
-          {{ isConnected ? '已连接' : '未连接' }}
-        </span>
+    <div class="top-bar">
+      <div class="logo-title">
+        <h1>Open CortexArray -- EEG示波器</h1>
       </div>
-    </header>
-
-    <!-- ✅ 控制面板完全保留 -->
-    <div class="control-panel">
-      <!-- LSL流发现和连接 -->
-      <div class="control-group">
-        <button 
-          @click="discoverStreams" 
-          :disabled="isDiscovering || isConnected"
-          class="btn btn-primary"
-        >
-          {{ isDiscovering ? '搜索中...' : '发现LSL流' }}
-        </button>
-        
-        <select 
-          v-model="selectedStream" 
-          :disabled="isConnected || availableStreams.length === 0"
-          class="stream-select"
-        >
-          <option v-if="availableStreams.length === 0" value="">无可用流</option>
-          <option 
-            v-for="stream in availableStreams" 
-            :key="stream.source_id" 
-            :value="stream.name"
+      <div class="control-panel">
+        <!-- LSL流发现和连接 -->
+        <div class="control-group">
+          <button 
+            @click="discoverStreams" 
+            :disabled="isDiscovering || isConnected"
+            class="btn btn-primary"
           >
-            {{ stream.name }} ({{ stream.channels_count }}ch, {{ stream.sample_rate }}Hz)
-          </option>
-        </select>
-        
-        <button 
-          @click="connectToSelectedStream" 
-          :disabled="!selectedStream || isConnected"
-          class="btn btn-success"
-        >
-          连接到流
-        </button>
-        
-        <button 
-          @click="disconnectStream" 
-          :disabled="!isConnected"
-          class="btn btn-danger"
-        >
-          断开连接
-        </button>
-      </div>
+            {{ isDiscovering ? '搜索中...' : '发现LSL流' }}
+          </button>
+          
+          <select 
+            v-model="selectedStream" 
+            :disabled="isConnected || availableStreams.length === 0"
+            class="stream-select"
+          >
+            <option v-if="availableStreams.length === 0" value="">无可用流</option>
+            <option 
+              v-for="stream in availableStreams" 
+              :key="stream.source_id" 
+              :value="stream.name"
+            >
+              {{ stream.name }} ({{ stream.channels_count }}ch, {{ stream.sample_rate }}Hz)
+            </option>
+          </select>
+          
+          <button 
+            @click="connectToSelectedStream" 
+            :disabled="!selectedStream || isConnected"
+            class="btn btn-success"
+          >
+            连接到流
+          </button>
+          
+          <button 
+            @click="disconnectStream" 
+            :disabled="!isConnected"
+            class="btn btn-danger"
+          >
+            断开连接
+          </button>
+        </div>
 
-      <!-- 录制控制 -->
-      <div class="control-group">
-        <input 
-          v-model="recordingFilename" 
-          placeholder="录制文件名.edf"
-          :disabled="isRecording"
-          class="filename-input"
-        />
-        <button 
-          @click="startRecording" 
-          :disabled="!isConnected || isRecording"
-          class="btn btn-success"
-        >
-          开始录制
-        </button>
-        <button 
-          @click="stopRecording" 
-          :disabled="!isRecording"
-          class="btn btn-danger"
-        >
-          停止录制
-        </button>
-        <span v-if="isRecording" class="recording-indicator">🔴 录制中</span>
-      </div>
-
-      <!-- 通道操作提示 -->
-      <div v-if="isConnected && CHANNELS_COUNT > 0" class="channel-help">
-        <span class="control-label">通道操作:</span>
-        <span class="help-text">点击左侧标签切换显示 | Ctrl+点击多选高亮</span>
-      </div>
-    </div>
-
-    <!-- 可视化区域 -->
-    <div class="visualization-area">
-      <div v-if="!isConnected" class="connection-prompt">
-        <h3>请先连接到LSL流</h3>
-        <div class="architecture-info">
-          <h4>🚀 混合架构特性</h4>
-          <ul>
-            <li>✅ App.vue：连接管理 + UI交互 + 性能监控</li>
-            <li>✅ TimeDomainCanvas：独立监听 binary-frame-update</li>
-            <li>✅ FrequencyDomainCanvas：独立监听 frequency-update</li>
-            <li>✅ 最佳的职责分离和性能优化</li>
-          </ul>
+        <!-- 录制控制 -->
+        <div class="control-group">
+          <input 
+            v-model="recordingFilename" 
+            placeholder="录制文件名.edf"
+            :disabled="isRecording"
+            class="filename-input"
+          />
+          <button 
+            @click="startRecording" 
+            :disabled="!isConnected || isRecording"
+            class="btn btn-success"
+          >
+            开始录制
+          </button>
+          <button 
+            @click="stopRecording" 
+            :disabled="!isRecording"
+            class="btn btn-danger"
+          >
+            停止录制
+          </button>
+          <span v-if="isRecording" class="recording-indicator">🔴 录制中</span>
         </div>
       </div>
-
-      <div v-else class="dual-canvas-layout">
-        <!-- ✅ 传递streamInfo而不是单独的参数 -->
-        <TimeDomainCanvas
-          ref="timeDomainCanvasRef"
-          :stream-info="streamInfo"
-          :channel-visibility="channelVisibility"
-          :selected-channels="selectedChannels"
-          :hovered-channel="hoveredChannel"
-          :is-connected="isConnected"
-          @toggle-channel="toggleChannel"
-          @select-channel="selectChannel"
-          @hover-channel="hoverChannel"
-          @update-render-rate="updateTimedomainRenderRate"
-          @update-wave-front="updateWaveFront"
-        />
-
-        <FrequencyDomainCanvas
-          ref="frequencyDomainCanvasRef"
-          :stream-info="streamInfo"
-          :channel-visibility="channelVisibility"
-          :selected-channels="selectedChannels"
-          :max-freq="60"
-          @update-frequency-rate="updateFrequencyRate"
-        />
-      </div>
     </div>
 
-    <!-- ✅ 信息面板保留性能监控 -->
-    <div class="info-panel">
-      <div class="info-item">
-        <strong>架构:</strong> 混合模式（连接管理 + 独立画布监听） 🎯
-      </div>
-      <div class="info-item">
-        <strong>时域渲染率:</strong> {{ Math.round(timedomainRenderRate) }}Hz
-      </div>
-      <div class="info-item">
-        <strong>频域更新率:</strong> {{ Math.round(frequencyRenderRate) }}Hz
+    <div class="main-canvas-area">
+      <!-- 可视化区域 -->
+      <div class="visualization-area">
+        <div v-if="!isConnected" class="connection-prompt">
+          <h3>请先连接到LSL流</h3>
+          <div class="architecture-info">
+            <h4>🚀 混合架构特性</h4>
+            <ul>
+              <li>✅ App.vue：连接管理 + UI交互 + 性能监控</li>
+              <li>✅ TimeDomainCanvas：独立监听 binary-frame-update</li>
+              <li>✅ FrequencyDomainCanvas：独立监听 frequency-update</li>
+              <li>✅ 最佳的职责分离和性能优化</li>
+            </ul>
+          </div>
+        </div>
+
+        <div v-else class="dual-canvas-layout">
+          <!-- ✅ 传递streamInfo而不是单独的参数 -->
+          <TimeDomainCanvas
+            ref="timeDomainCanvasRef"
+            :stream-info="streamInfo"
+            :channel-visibility="channelVisibility"
+            :selected-channels="selectedChannels"
+            :hovered-channel="hoveredChannel"
+            :is-connected="isConnected"
+            @toggle-channel="toggleChannel"
+            @select-channel="selectChannel"
+            @hover-channel="hoverChannel"
+            @update-render-rate="updateTimedomainRenderRate"
+            @update-wave-front="updateWaveFront"
+          />
+
+          <FrequencyDomainCanvas
+            ref="frequencyDomainCanvasRef"
+            :stream-info="streamInfo"
+            :channel-visibility="channelVisibility"
+            :selected-channels="selectedChannels"
+            :max-freq="60"
+            @update-frequency-rate="updateFrequencyRate"
+          />
+        </div>
       </div>
     </div>
   </div>
@@ -389,27 +363,32 @@ onMounted(async () => {
 <style scoped>
 /* 基础样式保持不变... */
 .eeg-visualizer {
-  font-family: 'Inter', 'Arial', sans-serif;
-  max-width: 100vw;
-  margin: 0;
-  padding: 0;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  min-height: 100vh;
-  color: #333;
-}
-
-.header {
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(10px);
-  padding: 1rem 2rem;
-  box-shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  flex-direction: column;
+  height: 100vh; /* 全屏高度 */
+  min-height: 0;
 }
 
-.header h1 {
+.top-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 2rem;
+  background: rgba(255,255,255,0.95);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+  border-bottom: 1px solid #eee;
+  min-height: 64px;
+  z-index: 10;
+}
+
+.logo-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.logo-title h1 {
   margin: 0;
   font-size: 1.8rem;
   font-weight: 700;
@@ -417,12 +396,6 @@ onMounted(async () => {
   background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-}
-
-.status-info {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
 }
 
 .stream-info {
@@ -453,13 +426,10 @@ onMounted(async () => {
 }
 
 .control-panel {
-  background: rgba(255, 255, 255, 0.9);
-  padding: 1.5rem 2rem;
   display: flex;
-  gap: 2rem;
+  gap: 1rem;
   align-items: center;
-  flex-wrap: wrap;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  /* 保持原按钮样式 */
 }
 
 .control-group {
@@ -562,6 +532,7 @@ onMounted(async () => {
 }
 
 .visualization-area {
+  flex: 1;
   padding: 2rem;
   background: rgba(255, 255, 255, 0.95);
   margin: 0 2rem 2rem;
@@ -603,32 +574,23 @@ onMounted(async () => {
 }
 
 .dual-canvas-layout {
+  flex: 1;
   display: flex;
   gap: 2rem;
-  height: 500px;
-  align-items: stretch; /* ✅ 确保子元素完全拉伸 */
-  /* ✅ 确保是真正的flex布局 */
   width: 100%;
+  height: 100%;
+  align-items: stretch;
 }
 
-/* ✅ 修正：确保两个组件都参与flex布局 */
-.dual-canvas-layout > * {
-  display: flex;
-  flex-direction: column;
-  /* ✅ 移除任何可能的绝对定位 */
-  position: relative;
-}
-
-/* 时域组件占用更大空间 */
 .dual-canvas-layout > :first-child {
-  flex: 2; /* 时域占2/3 */
-  min-width: 0; /* ✅ 防止flex收缩问题 */
+  flex: 2;
+  min-width: 0;
+  height: 100%;
 }
-
-/* 频域组件占用较小空间但高度对齐 */
 .dual-canvas-layout > :last-child {
-  flex: 1; /* 频域占1/3 */
-  min-width: 0; /* ✅ 防止flex收缩问题 */
+  flex: 1;
+  min-width: 0;
+  height: 100%;
 }
 
 
@@ -648,7 +610,7 @@ onMounted(async () => {
 }
 
 @media (max-width: 768px) {
-  .header {
+  .top-bar {
     flex-direction: column;
     gap: 1rem;
     text-align: center;
@@ -669,5 +631,12 @@ onMounted(async () => {
     gap: 0.5rem;
     margin: 0 1rem 1rem;
   }
+}
+
+.main-canvas-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 </style>
