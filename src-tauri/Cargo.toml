@@ -30,3 +30,11 @@ rand = "0.8"
 crossbeam-channel = "0.5"
 lsl = "0.1.1"
 edfplus = "0.1"
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
