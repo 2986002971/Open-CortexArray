@@ -49,6 +49,9 @@ jobs:
       - name: Install frontend dependencies (if needed)
         run: deno cache deno.json
 
+      - name: Install npm dependencies
+        run: deno install
+
       - name: Build frontend
         run: deno task build
 
