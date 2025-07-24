@@ -1,7 +1,7 @@
 <!-- filepath: src/components/TimeDomainCanvas.vue -->
 <template>
   <div class="time-domain-panel">
-    <h3>实时EEG波形 ({{ channelsCount }}通道, 事件驱动WebGL渲染)</h3>
+    <h3>实时EEG波形 -- {{ channelsCount }}通道</h3>
     <canvas 
       ref="canvasRef" 
       class="eeg-canvas"

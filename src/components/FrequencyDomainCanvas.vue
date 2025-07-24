@@ -1,7 +1,7 @@
 <!-- filepath: src/components/FrequencyDomainCanvas.vue -->
 <template>
   <div class="frequency-panel">
-    <h3>实时频谱分析 - (1-{{ maxFreq }}Hz)</h3>
+    <h3>实时频谱分析 -- (1-{{ maxFreq }}Hz)</h3>
     <canvas 
       ref="spectrumCanvasRef" 
       class="spectrum-canvas"
