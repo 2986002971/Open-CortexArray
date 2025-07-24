@@ -30,7 +30,8 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             pkg-config \
-            build-essential
+            build-essential \
+            libjavascriptcoregtk-4.1-dev
 
       - name: Setup Deno
         uses: denoland/setup-deno@v1
