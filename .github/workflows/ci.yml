@@ -14,7 +14,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     strategy:
       matrix:
-        platform: [ubuntu-22.04, windows-latest, macos-latest]
+        platform: [ubuntu-22.04, windows-latest]
 
     steps:
       - name: Checkout code
@@ -31,7 +31,8 @@ jobs:
             librsvg2-dev \
             pkg-config \
             build-essential \
-            libjavascriptcoregtk-4.1-dev
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev
 
       - name: Setup Deno
         uses: denoland/setup-deno@v1
