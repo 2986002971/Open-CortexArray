@@ -7,8 +7,7 @@
     "beforeDevCommand": "deno task dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "deno task build",
-    "frontendDist": "../dist",
-    "rustflags": ["-C", "link-arg=-DPTHREAD_STACK_MIN=16384"]
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [
