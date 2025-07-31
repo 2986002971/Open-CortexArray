@@ -73,8 +73,13 @@ jobs:
       - name: Build frontend
         run: deno task build
 
-      - name: Build Tauri app
+      - name: Build Tauri app (Linux)
+        if: runner.os == 'Linux'
         run: CFLAGS="-DPTHREAD_STACK_MIN=16384" CXXFLAGS="-DPTHREAD_STACK_MIN=16384" cargo tauri build
+
+      - name: Build Tauri app (Windows)
+        if: runner.os == 'Windows'
+        run: cargo tauri build
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
