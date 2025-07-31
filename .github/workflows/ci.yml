@@ -67,6 +67,9 @@ jobs:
       - name: Install npm dependencies
         run: deno install
 
+      - name: Install tauri CLI
+        run: cargo install create-tauri-app --locked
+
       - name: Build frontend
         run: deno task build
 
