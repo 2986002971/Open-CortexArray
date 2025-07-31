@@ -1,0 +1,7 @@
+[target.x86_64-unknown-linux-gnu.env]
+CFLAGS = "-DPTHREAD_STACK_MIN=16384"
+CXXFLAGS = "-DPTHREAD_STACK_MIN=16384"
+
+[target.aarch64-unknown-linux-gnu.env]
+CFLAGS = "-DPTHREAD_STACK_MIN=16384"
+CXXFLAGS = "-DPTHREAD_STACK_MIN=16384"
