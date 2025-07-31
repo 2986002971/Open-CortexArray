@@ -71,7 +71,7 @@ jobs:
         run: deno task build
 
       - name: Build Tauri app
-        run: deno task tauri
+        run: CFLAGS="-DPTHREAD_STACK_MIN=16384" CXXFLAGS="-DPTHREAD_STACK_MIN=16384" cargo tauri build
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
